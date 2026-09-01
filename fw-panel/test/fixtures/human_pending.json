@@ -1,0 +1,6 @@
+{
+  "pending": [
+    {"type": "decision", "text": "模块 m01 存在同名单冲突，请选择处理方式", "choices": ["A", "B", "C", "D"], "module": "m01", "seq": 12},
+    {"type": "question", "text": "是否需要继续 split m02？", "module": "m02", "seq": 15}
+  ]
+}

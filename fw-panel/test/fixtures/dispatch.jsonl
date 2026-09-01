@@ -1,0 +1,10 @@
+{"ts": "2026-08-26T22:20:09+08:00", "event": "scaffold", "module": null, "action": "created", "detail": {"task": "autoknit-v2-人在环上闭环"}}
+{"seq": 1, "ts": "2026-08-26T22:25:42+08:00", "run_id": "run-test-abc123", "event": "run.start", "module": null, "action": null, "detail": {"task": "autoknit-v2-人在环上闭环"}}
+{"seq": 2, "ts": "2026-08-26T22:25:42+08:00", "run_id": "run-test-abc123", "event": "module.dispatch", "module": "m01", "action": null, "detail": {}}
+{"seq": 3, "ts": "2026-08-26T22:25:42+08:00", "run_id": "run-test-abc123", "event": "executor.round.start", "module": "m01", "action": null, "detail": {"round": 1}}
+{"seq": 4, "ts": "2026-08-26T22:25:42+08:00", "run_id": "run-test-abc123", "event": "executor.round.done", "module": "m01", "action": null, "detail": {"round": 1}}
+{"seq": 5, "ts": "2026-08-26T22:25:42+08:00", "run_id": "run-test-abc123", "event": "auditor.round.start", "module": "m01", "action": null, "detail": {"round": 1}}
+{"seq": 6, "ts": "2026-08-26T22:25:42+08:00", "run_id": "run-test-abc123", "event": "module.done", "module": "m01", "action": null, "detail": {}}
+{"seq": 7, "ts": "2026-08-26T22:25:42+08:00", "run_id": "run-test-abc123", "event": "module.dispatch", "module": "m02", "action": null, "detail": {}}
+{"seq": 8, "ts": "2026-08-26T22:25:42+08:00", "run_id": "run-test-abc123", "event": "executor.round.start", "module": "m02", "action": null, "detail": {"round": 1}}
+{"seq": 9, "ts": "2026-08-26T22:25:42+08:00", "run_id": "run-test-abc123", "event": "auditor.round.start", "module": "m02", "action": null, "detail": {"round": 1}}

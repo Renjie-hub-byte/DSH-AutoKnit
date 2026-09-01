@@ -1,0 +1,21 @@
+# cordis.patch.yml —— 把 client 插件 dsh-client-ui-autoknit 挂到 web profile（正确做法）
+#
+# ⚠️ 铁律：client 插件（package.json 带 dsh.client 声明）**不能**进
+# `package.json` 的 `dsh.profile.bundles`（bundle 是给 dsh.bundle patch 包的）。
+# 进了 bundles 会在启动时被 cordis 以 node 插件装载，node 半一旦碰 ctx.layout 就
+# `cannot get property "layout" without inject` → 重启即崩（历史崩因）。
+#
+# 正确挂法（三步）：
+#   1) 插件包目录放 ~/.dsh/profiles/web/plugins/dsh-client-ui-autoknit/
+#   2) profile 的 package.json dependencies 加 file: 依赖（不是 bundles！）
+#      "dsh-client-ui-autoknit": "file:plugins/dsh-client-ui-autoknit"
+#   3) 下面这段 insert 并入 profile 的 cordis.patch.yml 顶层数组（与 mcp-playwright
+#      / delegation / tdai-memory 条目并列）
+#
+# 挂载前务必先构建 browser 半（node build.mjs → dist/client.js），否则前端
+# 无法物化；挂载后 corepack pnpm install + 重启 DSH。改前先备份 package.json /
+# cordis.patch.yml（.bak）。
+
+- insert:
+    - id: ui-autoknit
+      name: 'dsh-client-ui-autoknit'

@@ -1,0 +1,17 @@
+{
+  "status": "ok",
+  "verdict": "block",
+  "blocker": "契约冲突：m02 与 m01 重复声明 POST /api/order/*",
+  "root": "contract",
+  "confidence": 0.85,
+  "reason": "两模块在 contracts/api.yaml 声明同一接口前缀+方法，属契约/规划标准问题，直接回人定优先级",
+  "tokens": 0,
+  "detail": {
+    "kind": "cross_module_duplicate",
+    "module": "m02",
+    "module_b": "m01",
+    "method": "POST",
+    "path": "/api/order/*",
+    "root_class": "contract"
+  }
+}

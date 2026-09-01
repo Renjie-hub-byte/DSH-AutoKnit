@@ -1,0 +1,26 @@
+# 依赖环示例：实际依赖 m01:[m03] m02:[m01] m03:[m02] → 环 m01→m03→m02→m01（C→B→A→C 同环）
+# 预期：fw-protocol 报 dep_cycle 错误并指出环路径（exit 1）
+task:
+  name: 示例-含环任务
+  owner: 小理
+budget:
+  max_tokens: 100000
+modules:
+  - id: m01
+    name: 模块A
+    layer: 1
+    objective: 目标一
+    dependencies: [m03]
+    acceptance: [完成目标一]
+  - id: m02
+    name: 模块B
+    layer: 1
+    objective: 目标二
+    dependencies: [m01]
+    acceptance: [完成目标二]
+  - id: m03
+    name: 模块C
+    layer: 1
+    objective: 目标三
+    dependencies: [m02]
+    acceptance: [完成目标三]

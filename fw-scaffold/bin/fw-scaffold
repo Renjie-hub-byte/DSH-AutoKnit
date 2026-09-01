@@ -1,0 +1,14 @@
+#!/usr/bin/env python3.11
+"""fw-scaffold 可执行入口（免 pip install）：python3.11 bin/fw-scaffold task.yaml"""
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PKG = os.path.dirname(_HERE)
+if _PKG not in sys.path:
+    sys.path.insert(0, _PKG)
+
+from fw_scaffold.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

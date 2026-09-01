@@ -1,0 +1,30 @@
+# 接口重复示例：m01 与 m02 均声明 POST /api/order/*
+# 预期：fw-protocol 报 interface_duplicate 错误，指出两个模块与共享方法（exit 1）
+task:
+  name: 示例-接口重复
+  owner: 小理
+modules:
+  - id: m01
+    name: 订单写入A
+    layer: 1
+    objective: 提供订单写入
+    interfaces:
+      - path: /api/order/*
+        method: [POST]
+    acceptance: [提供订单写入接口]
+  - id: m02
+    name: 订单写入B
+    layer: 1
+    objective: 提供订单写入（撞车）
+    interfaces:
+      - path: /api/order/*
+        method: [POST, GET]   # 大小写不敏感：post 与 POST 视为同一方法
+    acceptance: [提供订单写入接口]
+  - id: m03
+    name: 报表
+    layer: 1
+    objective: 生成报表
+    interfaces:
+      - path: /api/report/*
+        method: [GET]
+    acceptance: [生成报表]

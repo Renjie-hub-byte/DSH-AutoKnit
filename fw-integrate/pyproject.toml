@@ -1,0 +1,11 @@
+[project]
+name = "fw-integrate"
+version = "1.0.0"
+description = "dsh 之上任务编排层——集成验收（需求6）：运行时契约校验（接口匹配/数据格式）/跨模块数据依赖/预测基线对照/完成归档"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["PyYAML"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,18 @@
+#!/usr/bin/env python3.11
+"""fw-budget CLI 可执行入口。"""
+import sys
+from pathlib import Path
+
+_FW1 = Path(__file__).resolve().parent.parent.parent
+this_dir = Path(__file__).resolve().parent.parent
+for _d in ("fw-budget", "fw-runner", "fw-protocol", "fw-scaffold"):
+    _p = str((_FW1 / _d).resolve())
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+if str(this_dir) not in sys.path:
+    sys.path.insert(0, str(this_dir))
+
+from fw_budget.cli import main
+
+if __name__ == "__main__":
+    sys.exit(main())

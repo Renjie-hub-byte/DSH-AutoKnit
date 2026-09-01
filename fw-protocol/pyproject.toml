@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fw-protocol"
+version = "1.0.0"
+description = "任务书协议与校验器：task.yaml JSON Schema + 依赖环/接口重复/验收冲突三查（dsh 任务编排层 v1.0）"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6.0", "jsonschema>=4.0"]
+
+[project.scripts]
+fw-protocol = "fw_protocol.cli:main"
+
+[tool.setuptools]
+packages = ["fw_protocol"]

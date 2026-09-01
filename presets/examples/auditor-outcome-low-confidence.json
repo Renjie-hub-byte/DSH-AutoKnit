@@ -1,0 +1,13 @@
+{
+  "status": "ok",
+  "verdict": "block",
+  "blocker": "证据不足，无法确认产物真实（低置信，建议 pro 重审）",
+  "root": "self",
+  "confidence": 0.4,
+  "reason": "事件流缺少 tool/result 证据，测试内容未覆盖关键逻辑；置信度低于 0.7，触发重审/仲裁",
+  "tokens": 0,
+  "detail": {
+    "confidence_level": "low",
+    "triggers": ["pro_review", "human_arbitration"]
+  }
+}

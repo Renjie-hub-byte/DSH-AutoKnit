@@ -1,0 +1,15 @@
+#!/usr/bin/env python3.11
+"""fw-protocol 可执行入口（免 pip install）。
+
+用法: ./bin/fw-protocol task.yaml [--json] [--no-cycle] [--no-interface] [--no-conflict]
+包目录 = 本脚本上一级；把包目录塞进 sys.path 后按模块跑。
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from fw_protocol.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fw-scaffold"
+version = "1.0.0"
+description = "dsh 任务编排层 v1.0 需求 2：读合法 task.yaml 一键生成 v2 目录树（原子写 + expected 版本防护）"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6.0", "jsonschema>=4.0"]
+
+[project.scripts]
+fw-scaffold = "fw_scaffold.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fw_scaffold*"]

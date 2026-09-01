@@ -1,0 +1,57 @@
+#!/usr/bin/env python3.11
+"""fw-runner 内置演示 auditor 驱动（子进程形态，cwd=模块目录）。
+
+行为（演示验收协议）：
+1. 读 REVIEW.md 已做节 + src/ 产物 → 对照任务书-<id>.yaml 的 acceptance（演示为轻量核对）
+2. 有实质产物 → pass（confidence 0.9）；否则 block（root=self，附 blocker/reason）
+3. 写 tmp/auditor-outcome.json（auditor 判定四段：verdict/root/confidence/reason/blocker）
+
+三权分立：auditor 只判不写执行；本脚本不修改 REVIEW.md 机器键（runner 统一写回）。
+"""
+import json
+import os
+import sys
+from pathlib import Path
+
+# fw_runner 由运行环境提供（pip 安装，或 driver 注入的 PYTHONPATH），不再做 sys.path hack
+from fw_runner.review import read_review
+
+module_dir = Path(os.environ["MODULE_DIR"])
+run_id = os.environ.get("RUN_ID", "run")
+review_path = module_dir / "REVIEW.md"
+doc = read_review(review_path) if review_path.is_file() else None
+
+done_entries = [ln for ln in (doc.list_done() if doc else [])
+                if ln.strip() not in ("- （占位）",)]
+artifacts = sorted(p.name for p in (module_dir / "src").glob("*") if p.is_file())
+
+print(f"[fw-auditor-demo] 审计 {module_dir.name} run={run_id} done={len(done_entries)} artifacts={artifacts}")
+
+if len(done_entries) >= 1 and artifacts:
+    outcome = {
+        "status": "ok", "verdict": "pass", "root": "", "confidence": 0.9,
+        "reason": "演示验收通过：已做条目与 src 产物齐全",
+        "blocker": "",
+        "tokens": 0,
+        # BUG-002a（2026-08-25）：演示 auditor 基于真实 REVIEW.md + src 产物核对 → 证据等级 L2（内容取证）
+        "evidence_level": "L2",
+        "evidence": [f"REVIEW.md 已做条目 x{len(done_entries)}",
+                     f"src/ 产物: {', '.join(artifacts)}"],
+        "detail": {"done_entries": len(done_entries), "artifacts": artifacts},
+    }
+else:
+    outcome = {
+        "status": "ok", "verdict": "block", "root": "self", "confidence": 0.5,
+        "reason": "演示验收不通过：未见实质产物（已做/产物缺失）",
+        "blocker": "缺 src/ 产物或 REVIEW 已做条目",
+        "tokens": 0,
+        "evidence_level": "L2",
+        "evidence": [f"REVIEW.md 已做条目 x{len(done_entries)}",
+                     f"src/ 产物: {', '.join(artifacts)}"],
+        "detail": {"done_entries": len(done_entries), "artifacts": artifacts},
+    }
+
+(tmp := module_dir / "tmp").mkdir(exist_ok=True)
+(tmp / "auditor-outcome.json").write_text(json.dumps(outcome, ensure_ascii=False, indent=2),
+                                          encoding="utf-8")
+print(f"[fw-auditor-demo] verdict={outcome['verdict']} root={outcome['root']}")

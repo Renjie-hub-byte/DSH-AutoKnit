@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# AutoKnit —— 统一 CLI 入口（前身 framework-v1，别名 fw）
+#
+# 一个命令搞定：从 PRD 拆任务 → 分治执行 → 看状态 → 看 token 账。
+#   自动织 (autoknit new)    <PRD.md>          从 PRD 规划出可分治执行的任务
+#   自动织 (autoknit run)    <任务目录>         分治执行（planner 织骨架→executor 织代码）
+#   自动织 (autoknit status) <任务目录>         实时状态
+#   自动织 (autoknit token)  [关键字]           看 token 账（输入/输出/缓存）
+#
+# 依赖：框架在本机（framework-v1 仓库，含 fw-runner/fw-scaffold/fw-tools）
+# 配置：dflow.yaml（项目级 runtime 阈值/并行 + models 各角色 model/reasoning_effort）
+set -uo pipefail
+
+FW1="${FW1:-$HOME/projects-hold/projects/dsh-workflow/framework-v1}"
+TOOLS="$FW1/fw-tools"
+
+if [ $# -lt 1 ]; then
+  cat <<'EOF'
+AutoKnit — 自动编织多 Agent 协作的分治执行框架（省钱 · 快速 · 优雅，基于 dsh）
+
+用法:
+  autoknit new <PRD.md> [--name 任务名] [--owner 负责人] [--out 目录]   从 PRD 规划任务
+  autoknit run <任务目录> [--max-parallel N] [--executor-model M] [--config dflow.yaml]  分治执行
+  autoknit status <任务目录> [--once]       看实时状态
+  autoknit token [关键字]                   看 token 账（输入/输出/缓存命中）
+  autoknit demo <任务目录>                   链路联调（0 token）
+  autoknit doctor                          环境体检：缺什么、怎么装
+  autoknit dashboard                       数据桥面板数据（:8765 健康 + 最近 run）
+
+子命令即 fw-* 工具（前身命名），`autoknit X` ≡ `fw-X`。--help 看各子命令详情。
+EOF
+  exit 0
+fi
+
+CMD="$1"; shift
+case "$CMD" in
+  new)    bash "$TOOLS/fw-new.sh" "$@" ;;
+  run|exec) bash "$TOOLS/fw-run.sh" "$@" ;;
+  status) python3.11 "$TOOLS/fw-status.py" "$@" ;;
+  token)  python3.11 "$TOOLS/fw-token.py" "$@" ;;
+  demo)   bash "$TOOLS/fw-run.sh" "$@" --mode demo ;;
+  doctor) python3.11 "$TOOLS/fw-doctor.py" "$@" ;;
+  dashboard) python3.11 "$TOOLS/fw-dashboard.py" "$@" ;;
+  # AutoKnit v2：人在环上——plan-only（只规划给人审）+ 程序化合代码 merge
+  # plan-only 产 task.yaml 供审，同意后用 autoknit run --resume-from-checkpoint 接续
+  # （等价 fw-merge：merge 是这个功能的同义词；summary/plan-only 读同一份规划）
+  plan-only|planonly) PYTHONPATH="$FW1/fw-planonly/src" python3.11 -m autoknit plan-only "$@" ;;
+  summary) PYTHONPATH="$FW1/fw-planonly/src" python3.11 -m autoknit summary "$@" ;;
+  merge)   PYTHONPATH="$FW1/fw-merge/src" python3.11 -m fw_merge "$@" ;;
+  *)
+    echo "unknown subcommand: ${CMD} (new|run|status|token|demo|plan-only|summary|merge|doctor|dashboard)" >&2
+    exit 1
+    ;;
+esac

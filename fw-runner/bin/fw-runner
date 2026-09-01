@@ -1,0 +1,18 @@
+#!/usr/bin/env python3.11
+"""fw-runner CLI 开发入口（源码树直跑）。
+
+打包形态请用 pip 安装后的 `fw-runner` console script（pyproject [project.scripts]）。
+本 shim 只把 fw-runner 源码根加进 sys.path（包自身可 import）；
+fw-protocol / fw-scaffold 为正规 pip 依赖，随环境提供，不再做兄弟包路径 hack。
+"""
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from fw_runner.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

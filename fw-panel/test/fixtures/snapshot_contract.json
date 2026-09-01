@@ -1,0 +1,23 @@
+{
+  "schema_version": 4,
+  "run_id": "run-test-contract",
+  "task": "autoknit-v2-人在环上闭环",
+  "updated_at": "2026-08-26T22:50:00+08:00",
+  "status": "running",
+  "stage": "audit",
+  "roles": ["planner", "executor", "auditor"],
+  "token_input": 5000,
+  "token_output": 1500,
+  "cache_hit": true,
+  "modules": {
+    "m01": "done",
+    "m02": "running"
+  },
+  "per_module": {
+    "m01": {"executor_round": 1, "auditor_round": 1, "tokens_used": 2000, "started_at": "2026-08-26T22:00:00+08:00", "ended_at": "2026-08-26T22:10:00+08:00"},
+    "m02": {"executor_round": 1, "auditor_round": 0, "tokens_used": 3000, "started_at": "2026-08-26T22:10:00+08:00", "ended_at": null}
+  },
+  "needs_human": [],
+  "completed_order": ["m01"],
+  "budget_used_tokens": 6500
+}

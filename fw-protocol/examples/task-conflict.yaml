@@ -1,0 +1,19 @@
+# 验收冲突示例：m01 验收同时含「快」（性能/越快越好）与「安全」（安全第一/万无一失）
+# 预期：fw-protocol status=conflict（exit 2）—— 不算结构错误，但需人工定优先级
+task:
+  name: 示例-验收冲突
+  owner: 小理
+modules:
+  - id: m01
+    name: 实时风控
+    layer: 1
+    objective: 风控实时判定
+    acceptance:
+      - 响应要快，越快越好，性能优先
+      - 安全第一，模型判定万无一失，宁可慢也不出错
+  - id: m02
+    name: 离线报表
+    layer: 1
+    objective: 生成离线统计
+    acceptance:
+      - 按日产出统计报表

@@ -1,0 +1,229 @@
+#!/usr/bin/env python3.11
+# -*- coding: utf-8 -*-
+"""fw-panorama —— 全景板：程序整合任务各模块的关键进度 + 消费，供追踪/沟通/调度。
+
+用法:
+  fw-panorama <任务目录> [--sessions ~/.fw-dsh/sessions] [--json]
+
+整合（全部程序可读，不耗 token）:
+  1. task.yaml          → 模块清单（顶层模块 + 接口协议）
+  2. 总日志/快照.json    → 当前状态（done/split/pending + SPLIT 子模块）
+  3. 总日志/dispatch.jsonl → 进度事件（executor 交付/auditor 打回/SPLIT/聚合）
+  4. sessions usage     → 分模块消费（token：输入/输出/缓存命中）
+
+输出: 人类可读全景（默认）/ JSON（--json）
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ZSTD = "/opt/homebrew/bin/zstd"
+
+
+def load_task_modules(task_dir: Path) -> list:
+    """读 task.yaml 顶层模块。"""
+    try:
+        import yaml
+        doc = yaml.safe_load(open(task_dir / "task.yaml", encoding="utf-8"))
+        return doc.get("modules", []) or []
+    except Exception as e:
+        return []
+
+
+def load_snapshot(task_dir: Path) -> dict:
+    """读快照（模块状态 + split 子模块）。"""
+    p = task_dir / "总日志" / "快照.json"
+    if not p.is_file():
+        return {}
+    try:
+        return json.load(open(p, encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def load_dispatch(task_dir: Path) -> list:
+    """读 dispatch 事件流。"""
+    p = task_dir / "总日志" / "dispatch.jsonl"
+    if not p.is_file():
+        return []
+    events = []
+    try:
+        for line in open(p, encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return events
+
+
+def summarize_progress(events: list, modules: dict) -> dict:
+    """从 dispatch 汇总进度。"""
+    prog = {}
+    for ev in events:
+        e = ev.get("event", "")
+        mid = ev.get("module")
+        det = ev.get("detail", {}) or {}
+        if mid is None:
+            continue
+        m = modules.setdefault(mid, {"id": mid, "name": "", "status": "?", "rounds": 0,
+                                     "blocks": 0, "verdicts": [], "children": []})
+        if e == "module.dispatch":
+            pass
+        elif e == "executor.round.start":
+            m["rounds"] += 1
+        elif e == "module.blocked":
+            m["blocks"] += 1
+            m.setdefault("actions", []).append(det.get("action", ""))
+        elif e == "auditor.round":
+            m["verdicts"].append(det.get("verdict", ""))
+        elif e == "module.split":
+            m["children"] = det.get("children", [])
+        elif e == "module.done":
+            m["status"] = "done"
+        elif e == "module.needs_human":
+            m["status"] = "needs_human"
+        elif e == "module.aggregated":
+            m["status"] = "done (聚合)"
+    return modules
+
+
+def count_usage(session_dir: str, task_prefix: str) -> dict:
+    """统计一个任务的 session 消费（输入/输出/缓存命中）。
+    ⚠️ 去重口径（关键）：DSH session 里 assistant/message 的 data.usage 与 assistant/chunk 的 usage 块
+       是【同一份 usage 报两次】（数值完全一致）——只累加 message 级那份，避免高估 2 倍。
+       task_prefix 非空时只统计 session 目录名含该关键词的（单任务消耗，不混入历史 session）。"""
+    tin = tout = tcached = 0
+    base = Path(session_dir)
+    if not base.is_dir():
+        return {"input": 0, "output": 0, "cached": 0, "rate": 0}
+    for root, dirs, files in os.walk(base):
+        # 只统计属于本任务的 session 目录（目录名含任务特征）
+        if task_prefix and task_prefix not in root:
+            continue
+        if "session.jsonl.zstd" not in files:
+            continue
+        path = os.path.join(root, "session.jsonl.zstd")
+        try:
+            out = subprocess.run([ZSTD, "-dc", path], capture_output=True,
+                                 text=True, errors="replace", timeout=30).stdout
+            for line in out.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if d.get("type") == "assistant/message":
+                    u = d.get("data", {}).get("usage")
+                    if isinstance(u, dict):
+                        tin += u.get("inputTokens", 0) or 0
+                        tout += u.get("outputTokens", 0) or 0
+                        tcached += u.get("cacheReadTokens", 0) or 0
+                # assistant/chunk 的 usage 块与 message 级 data.usage 是同一份（成对重复），不再累加
+        except Exception:
+            pass
+    total_in = tin + tcached
+    rate = (tcached / total_in * 100) if total_in else 0
+    return {"input": tin, "output": tout, "cached": tcached, "rate": rate}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="fw-panorama", description="fw 全景板")
+    ap.add_argument("task_dir", help="任务目录")
+    ap.add_argument("--sessions", default=os.path.expanduser("~/.fw-dsh/sessions"),
+                    help="sessions 目录（默认 ~/.fw-dsh/sessions）")
+    ap.add_argument("--json", action="store_true", help="输出 JSON")
+    args = ap.parse_args()
+
+    task_dir = Path(args.task_dir)
+    if not task_dir.is_dir():
+        print(f"✗ 任务目录不存在: {task_dir}", file=sys.stderr)
+        return 1
+
+    # 1. 模块清单（顶层 + 协议）
+    top_modules = load_task_modules(task_dir)
+    snapshot = load_snapshot(task_dir)
+    events = load_dispatch(task_dir)
+
+    # 2. 汇总模块（顶层 + split 子模块）
+    modules = {}
+    for m in top_modules:
+        modules[m.get("id", "")] = {
+            "id": m.get("id", ""), "name": m.get("name", ""),
+            "objective": (m.get("objective", "") or "")[:60],
+            "status": "pending", "rounds": 0, "blocks": 0,
+            "verdicts": [], "children": [], "interfaces": m.get("interfaces", []),
+        }
+    # 快照里的 split 子模块也加入
+    snap_mods = snapshot.get("modules", {}) or {}
+    for mid, st in snap_mods.items():
+        modules.setdefault(mid, {"id": mid, "name": "", "objective": "",
+                                 "status": st, "rounds": 0, "blocks": 0,
+                                 "verdicts": [], "children": [], "interfaces": []})
+        modules[mid]["status"] = st
+
+    summarize_progress(events, modules)
+
+    # 3. 消费统计（只统计本任务：任务目录名 → session 目录关键词）
+    #    session 目录把非 ASCII 编码成 ~XXXX~XXXX，截断到第一个非 ASCII 即可匹配前缀
+    task_key = re.sub(r"^任务[-_]?", "", task_dir.name)
+    task_key = re.split(r"[^\x00-\x7f]", task_key, 1)[0]
+    usage = count_usage(args.sessions, task_key)
+
+    # 4. 输出
+    if args.json:
+        out = {
+            "task_dir": str(task_dir),
+            "modules": modules,
+            "consumption": usage,
+            "stats": {
+                "top_level": len(top_modules),
+                "total_modules": len(modules),
+                "done": sum(1 for m in modules.values() if m["status"] in ("done", "done (聚合)")),
+                "split": sum(1 for m in modules.values() if m["status"] == "split"),
+            },
+        }
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    # 人类可读
+    print("=" * 70)
+    print(f"  fw 全景板 — {task_dir.name}")
+    print("=" * 70)
+    print(f"  模块: {len(top_modules)} 顶层 / {len(modules)} 总（含 SPLIT）| "
+          f"done {sum(1 for m in modules.values() if m['status'] in ('done','done (聚合)'))} "
+          f"| split {sum(1 for m in modules.values() if m['status']=='split')}")
+    print("-" * 70)
+    for mid in sorted(modules, key=lambda x: (len(x), x)):
+        m = modules[mid]
+        name = m["name"] or "(split 子模块)"
+        status_icon = {"done": "✅", "done (聚合)": "✅", "split": "🔀",
+                       "needs_human": "🙋", "pending": "⏳", "running": "🔄"}.get(m["status"], "❓")
+        verdicts = ",".join(m["verdicts"][:5]) if m["verdicts"] else "-"
+        children = f" → {','.join(m['children'])}" if m["children"] else ""
+        print(f"  {status_icon} {mid:6s} {name}{children}")
+        print(f"        轮={m['rounds']} 打回={m['blocks']} 判定=[{verdicts}] {m['objective']}")
+        if m["interfaces"]:
+            ifs = ", ".join(f"{i.get('path')}" for i in m["interfaces"][:3])
+            print(f"        协议: {ifs}")
+    print("-" * 70)
+    print(f"  消费: 输入(未缓存) {usage['input']:,} | 输出 {usage['output']:,} | "
+          f"缓存命中 {usage['cached']:,} ({usage['rate']:.1f}%)")
+    print("=" * 70)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

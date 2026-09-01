@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autoknit-planonly"
+version = "0.1.0"
+description = "autoknit plan-only 模式：只跑 planner、产出 task.yaml、写 checkpoint、打印摘要"
+requires-python = ">=3.9"
+dependencies = ["pyyaml>=6.0", "jsonschema>=4.0"]
+
+[project.scripts]
+autoknit = "autoknit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

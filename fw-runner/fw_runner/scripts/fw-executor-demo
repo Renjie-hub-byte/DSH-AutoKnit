@@ -1,0 +1,58 @@
+#!/usr/bin/env python3.11
+"""fw-runner 内置演示 executor 驱动（子进程形态，cwd=模块目录）。
+
+行为（演示真实 executor 纪律）：
+1. 开工先读 REVIEW.md（把关键行打到 stdout，模拟"读交接/读反馈"）
+2. 沿 REVIEW.md 追加一条"已做"并写一个 src/ 产物文件（实质产出 → substance=true）
+3. 写 tmp/executor-outcome.json 供 runner 解析（机器可解析结果）
+
+环境变量由 runner 注入：MODULE_DIR / TASK_ROOT / RUN_ID / ROUND / ROLE / EXECUTOR_ID / MODE。
+特殊：FW_EXIT_INTERRUPT=1 → 以退出码 13 退出（模拟中断，供 --resume-from-checkpoint 演示）。
+"""
+import json
+import os
+import sys
+from pathlib import Path
+
+# fw_runner 由运行环境提供（pip 安装，或 driver 注入的 PYTHONPATH），不再做 sys.path hack
+from fw_runner.review import append_done, append_todo, read_review
+
+module_dir = Path(os.environ["MODULE_DIR"])
+run_id = os.environ.get("RUN_ID", "run")
+round_no = os.environ.get("ROUND", "1")
+executor_id = os.environ.get("EXECUTOR_ID", "E1")
+
+review_path = module_dir / "REVIEW.md"
+print(f"[fw-executor-demo] 开工先读 REVIEW.md: {review_path} ({executor_id} round {round_no})")
+if review_path.is_file():
+    for line in review_path.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith(("status:", "root:", "executor_round:", "executor_id:")):
+            print(f"  REVIEW | {line.strip()}")
+
+# 待办首轮登记（演示：开工把验收清单拆成可执行 todo）
+append_todo(review_path, f"轮次 {round_no} 按验收清单执行（{run_id}）")
+# 已做登记（实质产出）
+append_done(review_path, f"完成演示轮 {round_no}（executor={executor_id}, run={run_id}）")
+(src_dir := module_dir / "src").mkdir(exist_ok=True)
+(src_dir / "demo-artifact.txt").write_text(
+    f"demo artifact from {executor_id} round {round_no} run {run_id}\n", encoding="utf-8")
+
+# 交付说明占位
+(delivery := module_dir / "交付说明.md")
+if delivery.is_file():
+    extra = "\n## 演示执行记录\n- 轮次 " + str(round_no) + " 已跑（" + run_id + "）\n"
+    with open(delivery, "a", encoding="utf-8") as f:
+        f.write(extra)
+
+if os.environ.get("FW_EXIT_INTERRUPT") == "1":
+    print("[fw-executor-demo] 模拟中断（exit 13）", file=sys.stderr)
+    sys.exit(13)
+
+(tmp := module_dir / "tmp").mkdir(exist_ok=True)
+(tmp / "executor-outcome.json").write_text(json.dumps({
+    "status": "ok",
+    "substance": True,
+    "tokens": 0,
+    "detail": {"executor_id": executor_id, "round": int(round_no), "run_id": run_id},
+}, ensure_ascii=False, indent=2), encoding="utf-8")
+print("[fw-executor-demo] done")

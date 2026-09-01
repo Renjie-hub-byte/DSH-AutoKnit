@@ -1,0 +1,90 @@
+# fw-scaffold 示例任务书（合法，经 fw-protocol 校验通过；3 模块，依赖链 m01→m02→m03）
+# 用法: python3.11 -m fw_scaffold.cli examples/task-valid.yaml --output /tmp/scaffold-demo
+task:
+  name: 示例-订单管道
+  source_prd: prd/订单管道.md
+  owner: 小理
+  created: 2026-08-21
+  grade: B
+  prediction_baseline:
+    will_have:
+      - 订单数据落盘为 JSON（src/data/orders.json 结构按契约）
+      - 清洗模块产出标准化订单记录（含字段校验）
+      - 报表模块输出按日聚合的订单统计 CSV
+    will_not_have:
+      - 不做实时流式处理（本任务是批处理）
+      - 不做支付与风控联动
+
+budget:
+  max_tokens: 500000
+  warn_at: 0.7
+  stop_at: 1.0
+  per_module_max_tokens: 200000
+
+runtime:
+  models:
+    planner: deepseek-v4-pro
+    executor: deepseek-v4-flash
+    auditor: deepseek-v4-flash
+  max_parallel: 2
+  executor_max_rounds: 5
+  retry_before_switch: 2
+  max_executor_switches: 1
+  end_gate: auto
+
+modules:
+  - id: m01
+    name: 数据采集
+    layer: 1
+    objective: 读取原始订单 CSV 并落盘为 JSON
+    dependencies: []
+    interfaces:
+      - path: /api/order/*
+        method: [POST, PUT]
+        note: 订单写入接口（数据源侧声明）
+    acceptance:
+      - 输入样例 CSV 后生成 src/data/orders.json，字段与契约 contracts/api.yaml 一致
+      - 空文件输入时输出空数组而非报错
+    boundaries:
+      - 不做数据清洗（只采集落盘）
+      - 不修改上游原始文件
+
+  - id: m02
+    name: 数据清洗
+    layer: 1
+    objective: 对采集到的订单做标准化清洗与字段校验
+    dependencies: [m01]
+    interfaces:
+      - path: /api/order/*
+        method: [GET]
+        note: 清洗后的订单查询接口（消费 m01 数据，方法不同不冲突）
+    acceptance:
+      - 对 orders.json 清洗后产出 cleaned_orders.json，非法记录标记 drop_reason 且总数可核对
+      - 清洗规则表 README 可查，字段类型与契约一致
+    boundaries:
+      - 不产出聚合报表（归 m03）
+      - 不改写 m01 的产物文件
+
+  - id: m03
+    name: 报表输出
+    layer: 1
+    objective: 按日聚合清洗后的订单并输出统计 CSV
+    dependencies: [m02]
+    interfaces:
+      - path: /api/report/*
+        method: [POST]
+        note: 报表生成接口
+    acceptance:
+      - 对 cleaned_orders.json 聚合出 daily_orders.csv，列名与契约一致
+      - 有测试用例覆盖空数据与单日多单两种场景
+    boundaries:
+      - 只读 m02 产物，不写回数据区
+
+integration:
+  contract_file: contracts/api.yaml
+  check:
+    dependency_cycle: true
+    interface_duplicate: true
+    acceptance_conflict: true
+    prediction_baseline: true
+    cross_module_data_dependency: true

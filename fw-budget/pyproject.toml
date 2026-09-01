@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fw-budget"
+version = "1.0.0"
+description = "预算闸门模块（需求5）：70% 预警/100% 硬停/单模块上限/加预算 resume/放弃归档"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["fw_budget"]

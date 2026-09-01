@@ -1,0 +1,268 @@
+'use strict';
+
+/**
+ * dsh-client-ui-autoknit — i18n message catalog.
+ *
+ * Tiny, framework-free message lookup. Has **no DOM, no global state**, so the
+ * same module is unit-tested in plain Node and executed in the browser bundle.
+ * Chinese (zh) is the default; `en` is provided for hosts that request it.
+ *
+ * Placeholders use `{name}` syntax and are substituted via `t(key, params)`.
+ */
+
+/** All message keys, per locale. zh is authoritative; en is a best-effort translation. */
+var MESSAGES = {
+  zh: {
+    'panel.title': 'AutoKnit 任务',
+    'panel.count': '{active} 活动 / {total} 全部',
+    'panel.loading': '加载中…',
+    'panel.empty.title': '暂无任务',
+    'panel.empty.hint': '数据桥尚未返回任何任务，可稍后刷新。',
+    'panel.error.title': '加载失败',
+    'panel.retry': '重试',
+    'task.stage': '阶段',
+    'task.modules': '模块状态',
+    'task.consumption': '消耗',
+    'task.run': '运行ID',
+    'task.detail': '详情',
+    'task.archive': '归档',
+    'task.archived': '已归档',
+    'detail.empty': '点击列表中的任务查看详情',
+    'meta': '基本信息',
+    'module_states': '模块状态',
+    'consumption': '消耗',
+    'value.unknown': '未知',
+    'value.empty': '（无）',
+    'route.empty': '未选择运行，点击下方运行切换路线图',
+    'route.runs': '运行',
+    'route.count': '{n} 运行',
+    'status.done': '完成',
+    'status.pending': '待执行',
+    'status.running': '进行中',
+    'status.needs_human': '待人工',
+    'status.block': '阻塞',
+    'module.token': 'token',
+    'route.modules': '{n} 个模块',
+    'route.split': '拆分',
+    'usage.total': '合计',
+    'usage.noSplit': '无拆分数据',
+    'reply.respond': '回应',
+    'reply.title': '人工决策',
+    'reply.hint': '该模块等待人工决定下一步。',
+    'reply.command.continue': '继续',
+    'reply.command.retry': '重试',
+    'reply.command.revise': '修改',
+    'reply.command.custom': '自定义',
+    'reply.command.label': '命令',
+    'reply.instruction.label': '说明（自由输入）',
+    'reply.instruction.placeholder': '补充指令或上下文…',
+    'reply.submit': '提交',
+    'reply.cancel': '取消',
+    'reply.submitting': '提交中…',
+    'reply.error.title': '提交失败',
+    'reply.command.invalid': '请选择有效的命令（继续/重试/修改/自定义）',
+    'reply.instruction.required': '自定义命令必须填写说明',
+    'reply.success': '决策已提交',
+    'detail.open': '详情',
+    'detail.close': '关闭',
+    'detail.title': '模块详情',
+    'detail.reason': '原因',
+    'detail.reason.empty': '（无原因）',
+    'detail.rounds': '轮次明细',
+    'detail.rounds.empty': '暂无轮次记录',
+    'detail.round': '第 {round} 轮',
+    'detail.verdict': '判定',
+    'detail.duration': '时长',
+    'detail.time': '起止时间',
+    'detail.started': '开始',
+    'detail.ended': '结束',
+    'detail.token': 'Token 拆分',
+    'token.input': '输入(含缓存)',
+    'token.output': '输出',
+    'token.cache': '缓存命中',
+    'token.cacheRate': '缓存命中率',
+    'token.duration': '用时',
+    'token.total': '合计',
+    'detail.split': '拆分',
+    'detail.splitCount': '{n} 个子模块',
+    'summary.token': 'token',
+    'summary.duration': '时长',
+    'summary.rounds': '{n} 轮',
+    'time.none': '（无）',
+    'flow.planner': 'Planner',
+    'plan.modules': '拆模块',
+    'plan.duration': '规划耗时',
+    'plan.noPlan': '无规划阶段',
+    'plan.cost': '规划消耗',
+    'plan.total': '总消耗',
+    'flow.executor': '执行',
+    'flow.auditor': '审计',
+    'flow.fork': '分叉',
+    'flow.split': '拆分',
+    'flow.round': '第 {round} 轮',
+    'flow.noRounds': '暂无轮次',
+    'flow.submodules': '{n} 个子模块',
+    'flow.to': '→',
+    'flow.root': '根',
+    'flow.branch': '分支',
+    'flow.recursion': '递归',
+    'flow.rounds': '{n} 轮',
+    'flow.children': '{n} 子块',
+    'flow.depth': '层级 {n}',
+    'flow.verdict.ok': '通过',
+    'flow.verdict.revise': '需修改',
+    'flow.verdict.block': '阻塞',
+    'flow.verdict.pending': '进行中',
+    'flow.verdict.other': '其他',
+    'flow.collapse': '收起',
+    'flow.expand': '展开',
+    'flow.active': '运行中'
+  },
+  en: {
+    'panel.title': 'AutoKnit Tasks',
+    'panel.count': '{active} active / {total} total',
+    'panel.loading': 'Loading…',
+    'panel.empty.title': 'No tasks',
+    'panel.empty.hint': 'The data bridge returned no tasks. Refresh later.',
+    'panel.error.title': 'Load failed',
+    'panel.retry': 'Retry',
+    'task.stage': 'Stage',
+    'task.modules': 'Modules',
+    'task.consumption': 'Consumption',
+    'task.run': 'Run ID',
+    'task.detail': 'Detail',
+    'task.archive': 'Archive',
+    'task.archived': 'Archived',
+    'detail.empty': 'Select a task to view its details',
+    'meta': 'Overview',
+    'module_states': 'Module states',
+    'consumption': 'Consumption',
+    'value.unknown': 'Unknown',
+    'value.empty': '(none)',
+    'route.empty': 'No run selected — choose a run below to view its route map',
+    'route.runs': 'Runs',
+    'route.count': '{n} runs',
+    'status.done': 'Done',
+    'status.pending': 'Pending',
+    'status.running': 'Running',
+    'status.needs_human': 'Needs human',
+    'status.block': 'Blocked',
+    'module.token': 'token',
+    'route.modules': '{n} modules',
+    'route.split': 'Split',
+    'usage.total': 'Total',
+    'usage.noSplit': 'No split data',
+    'reply.respond': 'Respond',
+    'reply.title': 'Human decision',
+    'reply.hint': 'This module is waiting for a human decision.',
+    'reply.command.continue': 'Continue',
+    'reply.command.retry': 'Retry',
+    'reply.command.revise': 'Revise',
+    'reply.command.custom': 'Custom',
+    'reply.command.label': 'Command',
+    'reply.instruction.label': 'Notes (free input)',
+    'reply.instruction.placeholder': 'Add instruction or context…',
+    'reply.submit': 'Submit',
+    'reply.cancel': 'Cancel',
+    'reply.submitting': 'Submitting…',
+    'reply.error.title': 'Submit failed',
+    'reply.command.invalid': 'Choose a valid command (continue/retry/revise/custom)',
+    'reply.instruction.required': 'Custom commands require a note',
+    'reply.success': 'Decision submitted',
+    'detail.open': 'Details',
+    'detail.close': 'Close',
+    'detail.title': 'Module details',
+    'detail.reason': 'Reason',
+    'detail.reason.empty': '(no reason)',
+    'detail.rounds': 'Round chain',
+    'detail.rounds.empty': 'No rounds yet',
+    'detail.round': 'Round {round}',
+    'detail.verdict': 'Verdict',
+    'detail.duration': 'Duration',
+    'detail.time': 'Timing',
+    'detail.started': 'Started',
+    'detail.ended': 'Ended',
+    'detail.token': 'Token split',
+    'token.input': 'Input(+cache)',
+    'token.output': 'Output',
+    'token.cache': 'Cache hit',
+    'token.cacheRate': 'Cache hit rate',
+    'token.duration': 'Duration',
+    'token.total': 'Total',
+    'detail.split': 'Split',
+    'detail.splitCount': '{n} submodules',
+    'summary.token': 'token',
+    'summary.duration': 'duration',
+    'summary.rounds': '{n} rounds',
+    'time.none': '(none)',
+    'flow.planner': 'Planner',
+    'plan.modules': 'Modules',
+    'plan.duration': 'Plan time',
+    'plan.noPlan': 'No planning phase',
+    'plan.cost': 'Plan cost',
+    'plan.total': 'Run total',
+    'flow.executor': 'Executor',
+    'flow.auditor': 'Auditor',
+    'flow.fork': 'Fork',
+    'flow.split': 'Split',
+    'flow.round': 'Round {round}',
+    'flow.noRounds': 'No rounds yet',
+    'flow.submodules': '{n} submodules',
+    'flow.to': '→',
+    'flow.root': 'Root',
+    'flow.branch': 'Branch',
+    'flow.recursion': 'Recursion',
+    'flow.rounds': '{n} rounds',
+    'flow.children': '{n} children',
+    'flow.depth': 'Depth {n}',
+    'flow.verdict.ok': 'Pass',
+    'flow.verdict.revise': 'Revise',
+    'flow.verdict.block': 'Blocked',
+    'flow.verdict.pending': 'Running',
+    'flow.verdict.other': 'Other',
+    'flow.collapse': 'Collapse',
+    'flow.expand': 'Expand',
+    'flow.active': 'Running'
+  }
+};
+
+/** Supported locales, in priority order; anything else falls back to zh. */
+var LOCALES = ['zh', 'en'];
+var DEFAULT_LOCALE = 'zh';
+
+/**
+ * Normalize a locale string to a supported catalog key.
+ * @param {string} locale
+ * @returns {string} 'zh' | 'en'
+ */
+function normalizeLocale(locale) {
+  var s = String(locale || '').toLowerCase();
+  if (s.slice(0, 2) === 'en') return 'en';
+  return DEFAULT_LOCALE;
+}
+
+/**
+ * Create a message lookup bound to a locale.
+ * @param {string} [locale] default 'zh'
+ * @returns {function(string, object?):string} t(key, params?)
+ */
+function makeT(locale) {
+  var catalog = MESSAGES[normalizeLocale(locale)];
+  return function t(key, params) {
+    var msg = catalog[key];
+    if (msg == null) msg = MESSAGES[DEFAULT_LOCALE][key];
+    if (msg == null) return key;
+    if (!params) return msg;
+    return String(msg).replace(/\{(\w+)\}/g, function (m, name) {
+      return params[name] != null ? String(params[name]) : m;
+    });
+  };
+}
+
+module.exports = {
+  MESSAGES: MESSAGES,
+  LOCALES: LOCALES,
+  DEFAULT_LOCALE: DEFAULT_LOCALE,
+  normalizeLocale: normalizeLocale,
+  makeT: makeT
+};

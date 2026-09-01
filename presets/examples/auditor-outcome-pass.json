@@ -1,0 +1,16 @@
+{
+  "status": "ok",
+  "verdict": "pass",
+  "blocker": "",
+  "root": "",
+  "confidence": 0.95,
+  "reason": "契约与产物一致：output.artifacts 全部存在、REVIEW 已做齐全、事件流核验无跨模块越界",
+  "tokens": 0,
+  "detail": {
+    "done_entries": 3,
+    "declared": ["src/data/orders.json"],
+    "missing": [],
+    "process_steps": 3,
+    "baseline": {"will_have_matched": 1, "will_have_missing": 0, "will_not_have_clean": 1, "will_not_have_violation": 0}
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "status": "ok",
+  "verdict": "block",
+  "blocker": "上游 m01 未交付 orders.json，本模块输入缺失",
+  "root": "upstream",
+  "confidence": 0.9,
+  "reason": "m02 需要 m01 的输入（input.from=[m01]），但 m01 未交付产物；非 executor 自身问题",
+  "tokens": 0,
+  "detail": {
+    "input_from": ["m01"],
+    "upstream_missing_artifacts": ["m01:src/data/orders.json"],
+    "root_class": "upstream"
+  }
+}

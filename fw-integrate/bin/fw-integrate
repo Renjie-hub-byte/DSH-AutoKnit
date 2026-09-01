@@ -1,0 +1,16 @@
+#!/usr/bin/env python3.11
+"""fw-integrate CLI 入口（可执行脚本包装 python3.11 -m fw_integrate.cli）。"""
+import os
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+for d in ("", "../fw-protocol", "../fw-scaffold", "../fw-runner", "../fw-budget"):
+    p = str((_ROOT / d).resolve())
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+from fw_integrate.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

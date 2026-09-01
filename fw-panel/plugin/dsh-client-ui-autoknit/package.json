@@ -1,0 +1,39 @@
+{
+  "name": "dsh-client-ui-autoknit",
+  "version": "0.2.0",
+  "description": "AutoKnit 真人交互面板 DSH client-plugin：browser 半注册 details 槽位渲染任务列表/归档/详情切换；node 半为空函数（绝不碰 ctx.layout）。声明格式对齐 DSH 官方 client 插件（dsh.client.platform/inject + exports[\"./client\"] 指向构建后的单文件 bundle）。",
+  "private": true,
+  "type": "commonjs",
+  "main": "lib/index.mjs",
+  "exports": {
+    ".": {
+      "default": "./lib/index.mjs"
+    },
+    "./client": {
+      "default": "./dist/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "dist",
+    "build.mjs",
+    "verify_bundle.mjs",
+    "test",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "verify": "node build.mjs && node verify_bundle.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

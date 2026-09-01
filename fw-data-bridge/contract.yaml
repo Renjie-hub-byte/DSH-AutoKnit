@@ -1,0 +1,117 @@
+# modules/m01-数据桥/contract.yaml —— 模块接口契约（fw-integrate 运行时校验用）
+# 模板由 fw-scaffold 从总任务书派生生成：read_api 预填总任务书声明的接口（path/method/note）；
+# input/output 是执行期涌现字段，由 executor 开工时填写（规划期禁止硬定字段）。
+module: m01
+name: 数据桥
+task: dsh插件-真渲染面板
+input:                 # <该模块需要的输入 schema>（占位，executor 填写）
+  from: []             # 上游模块产出 / shared/ 文件 / 事件载荷
+  describe:            # 一句话描述输入格式（占位）
+output:                # <该模块产出的输出 schema>（占位，executor 填写）
+  artifacts: []        # 产物相对路径列表（如 src/data/orders.json）
+  describe:            # 一句话描述输出格式（占位）
+read_api:              # 本模块只读暴露 API（跨模块只能通过这些读；预填自总任务书）
+  - path: fwapi.tasks.list
+    method: ["get"]
+    direction: F→R
+    note: 浏览器拉取任务列表（按紧急度排序），数据来自 fw_api.dsh.task.list；目录缺失/无活跃 run 确定性空降级 tasks=[]
+    data_shape:
+      request:
+        task_dir: str
+      response:
+        type: list
+        item:
+          run_id: str
+          stage: enum[executor, auditor, switch, needs_human, planning, unknown]
+          stage_label: str
+          module_states: dict
+          urgency: int
+          needs_human: bool
+          consumption:
+            token_input: int
+            token_output: int
+            cache_hit: str
+            duration_sec: int
+        extendable: true
+  - path: fwapi.tasks.detail
+    method: ["get"]
+    direction: F→R
+    note: 浏览器拉取单个 run 的模块级状态，数据来自 fw_api.dsh.task.detail；run_id 未命中/目录无效确定性空降级 run=null
+    data_shape:
+      request:
+        task_dir: str
+        run_id: str
+      response:
+        type: object
+        fields:
+          run_id: str
+          stage: enum[executor, auditor, switch, needs_human, planning, unknown]
+          stage_label: str
+          task_name: str
+          module_states: dict
+          needs_human: bool
+        extendable: true
+  - path: fwapi.tasks.archive
+    method: ["post"]
+    direction: F→R
+    note: 浏览器写入归档：把某 run_id 记入任务目录约定归档文件，之后列表不展示；重复归档幂等
+    data_shape:
+      request:
+        task_dir: str
+        run_id: str
+      response:
+        type: object
+        fields:
+          ok: bool
+          run_id: str
+          archived: bool
+  - path: fwapi.tasks.archived
+    method: ["get"]
+    direction: F→R
+    note: 浏览器读取已归档 run_id 集合，用于渲染前过滤；文件缺失返回空数组
+    data_shape:
+      request:
+        task_dir: str
+      response:
+        type: list
+        item: str
+
+shared_data:           # 跨模块共享数据契约（全模块同一份；任务根 contracts/data.yaml 是唯一事实源）
+  stores:
+  - name: archive_store
+    kind: file
+    path: 总日志/archived.json
+    env_var: AUTOKNIT_ARCHIVE_FILE
+    owners:
+    - m01
+    readers:
+    - m02
+    columns:
+      archived: array of run_id (str)
+  shared_enums:
+    task_stage:
+    - executor
+    - auditor
+    - switch
+    - needs_human
+    - planning
+    - unknown
+    human_choice:
+    - A
+    - B
+    - C
+    - D
+    - text
+  assignments:
+  - interface: fwapi.tasks.list
+    defined_by: m01
+    implementor: m01
+  - interface: fwapi.tasks.detail
+    defined_by: m01
+    implementor: m01
+  - interface: fwapi.tasks.archive
+    defined_by: m01
+    implementor: m01
+  - interface: fwapi.tasks.archived
+    defined_by: m01
+    implementor: m01

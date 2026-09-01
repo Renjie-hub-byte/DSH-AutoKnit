@@ -1,0 +1,458 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-workflow.local/fw-protocol/task-schema.json",
+  "title": "fw-protocol task.yaml schema (v0.4)",
+  "description": "任务书 schema —— dsh 之上任务编排层的共同语言。planner 产出、scaffold 派生、runner 拓扑调度、integrate 集成验收全部基于此文件。字段含义与示例见 docs/schema.md。",
+  "type": "object",
+  "required": [
+    "task",
+    "modules"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "task": {
+      "type": "object",
+      "description": "任务元信息与预测基线。",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "任务名（唯一；用于生成任务文件夹 任务-<名>_<日期>）"
+        },
+        "source_prd": {
+          "type": "string",
+          "description": "PRD / 原始需求来源（文件路径或段号），可选"
+        },
+        "owner": {
+          "type": "string",
+          "description": "任务负责人（人），可选"
+        },
+        "created": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}([ T][0-9:.]+)?$",
+          "description": "创建日期，ISO 格式，可选"
+        },
+        "grade": {
+          "enum": [
+            "A",
+            "B",
+            "C"
+          ],
+          "description": "任务等级：A 大项目 / B 中小 / C 小修，可选"
+        },
+        "goal": {
+          "type": "string",
+          "description": "任务总目标一句话（v2 planner 提炼，可选）"
+        },
+        "execution_order": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "object"
+              }
+            ]
+          },
+          "description": "模块执行顺序 + 理由（v2 planner，可选；元素为 {模块id: 理由} 或字符串）"
+        },
+        "prediction_baseline": {
+          "type": "object",
+          "description": "预测基线：执行后由 fw-integrate 对照。will_have=最终交付应有什么；will_not_have=不应有什么。",
+          "additionalProperties": false,
+          "properties": {
+            "will_have": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "最终交付会有什么"
+            },
+            "will_not_have": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "最终交付不会有什么"
+            }
+          }
+        },
+        "data_contract": {
+          "type": "object",
+          "description": "跨模块共享数据契约（可选）：共享存储 schema（表名/列/类型/ts 格式/谁写谁读/路径/环境变量）、共享状态枚举、文件布局、内部接口实现归属。字段必须来自 PRD；拿不准标 uncertain。没有跨模块共享数据就不写。",
+          "additionalProperties": true
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "description": "预算闸门配置（fw-budget 消费；warn_at 预警不停机，stop_at 硬停+快照+抛人）。",
+      "additionalProperties": false,
+      "properties": {
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "全局 token 总预算（默认 1000000）"
+        },
+        "warn_at": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "用量达到该比例时抛预警（默认 0.7）"
+        },
+        "stop_at": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "用量达到该比例时硬停（默认 1.0）"
+        },
+        "per_module_max_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "单模块 token 上限，防失控模块吃光全局（默认= max_tokens，即不单独限制）"
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "description": "执行期配置（fw-runner 消费，任务开始时可按需覆盖默认值）。",
+      "additionalProperties": false,
+      "properties": {
+        "models": {
+          "type": "object",
+          "description": "每角色模型（默认：planner=deepseek-v4-pro / executor=deepseek-v4-flash / auditor=deepseek-v4-flash）",
+          "additionalProperties": false,
+          "properties": {
+            "planner": {
+              "type": "string",
+              "minLength": 1
+            },
+            "executor": {
+              "type": "string",
+              "minLength": 1
+            },
+            "auditor": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "max_parallel": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "最大并行模块数（默认 3）"
+        },
+        "executor_max_rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "单模块 executor 轮数上限，超了判定卡循环换人（默认 5）"
+        },
+        "retry_before_switch": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "auditor 打回 N 次后换 executor（默认 2）"
+        },
+        "max_executor_switches": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "最多换几个 executor，再卡回人（默认 1）"
+        },
+        "end_gate": {
+          "enum": [
+            "auto",
+            "always"
+          ],
+          "description": "auto=异常才找人 / always=每任务人工确认（默认 auto）"
+        }
+      }
+    },
+    "modules": {
+      "type": "array",
+      "description": "模块清单（原子任务合同，按 变更隔离/验收可查/一轮可做 拆分）。",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "layer",
+          "objective",
+          "acceptance"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^m[0-9]+$",
+            "description": "模块 id，格式 m01..mNN（依赖用）"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "模块名"
+          },
+          "layer": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3,
+            "description": "树深度 ≤3：1=顶层模块，2/3=细化层"
+          },
+          "objective": {
+            "type": "string",
+            "minLength": 1,
+            "description": "一句话职责（高内聚点）"
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^m[0-9]+$"
+            },
+            "description": "依赖的模块 id 列表（默认 []）"
+          },
+          "interfaces": {
+            "type": "array",
+            "description": "接口协议（只到 前缀+方法 级，禁止规划期定字段；默认 []）",
+            "items": {
+              "type": "object",
+              "required": [
+                "path",
+                "method"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "接口路径前缀（如 /api/order/*）"
+                },
+                "method": {
+                  "description": "HTTP 方法（单个或列表；大小写不敏感，内部统一转大写）",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1
+                    }
+                  ]
+                },
+                "note": {
+                  "type": "string",
+                  "description": "一句话说明（可选）"
+                },
+                "direction": {
+                  "enum": [
+                    "F→R",
+                    "R→F",
+                    "N/A"
+                  ],
+                  "description": "数据流向（v2：F→R 前端调后端 / R→F 后端推前端 / N/A 表示 UI 挂载点等无数据流方向）"
+                },
+                "data_shape": {
+                  "type": "object",
+                  "description": "数据形态骨架（v2 契约层：request/response 核心字段）"
+                }
+              }
+            }
+          },
+          "acceptance": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "text"
+                  ],
+                  "properties": {
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "验收项描述"
+                    },
+                    "check": {
+                      "enum": [
+                        "auto",
+                        "manual"
+                      ],
+                      "description": "验收方式（v1.3，默认 auto）：auto=代码层机器可判定（框架内 auditor 验收）；manual=GUI/真实场景/体验，框架验收不出来，交人+外部 AI 验收（列 human_pending，不进 auditor 判定）"
+                    }
+                  }
+                }
+              ]
+            },
+            "description": "模块级验收清单（v1.3：支持 string 或 {text, check} 对象；check=manual 的项框架不判，交人工验收）"
+          },
+          "boundaries": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "边界：不许碰什么（默认 []）"
+          },
+          "round_estimate": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "planner 预估该模块需要的 executor 轮数（llm 回合），≥1。校验器：预估 > max_rounds_override 报 warning，> max_rounds_override×2 报 error（强制切开）"
+          },
+          "max_rounds_override": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "该模块的 executor 轮数上限覆盖；缺省继承 runtime.executor_max_rounds（默认 5）"
+          },
+          "environment": {
+            "type": "object",
+            "description": "环境依赖声明（v1.1）：planner 从 PRD 推断本模块需要的依赖，供环境准备阶段统一安装",
+            "additionalProperties": false,
+            "properties": {
+              "python_packages": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "需要的 pip 包名（如 markitdown / fastapi）"
+              },
+              "system_tools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "需要的系统工具（如 ffmpeg / tesseract）"
+              }
+            }
+          },
+          "first_block": {
+            "type": "object",
+            "description": "首发块（v2 贪心切块：600-1200 行、能独立验收的第一块）",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "minLength": 1,
+                "description": "首发块做什么"
+              },
+              "estimate_lines": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "首发块行数量级估计"
+              },
+              "acceptance": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "text"
+                      ],
+                      "properties": {
+                        "text": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "验收项描述"
+                        },
+                        "check": {
+                          "enum": [
+                            "auto",
+                            "manual"
+                          ],
+                          "description": "验收方式（v1.3，默认 auto）；manual=交人+外部 AI 验收，框架不判"
+                        }
+                      }
+                    }
+                  ]
+                },
+                "description": "首发块自己的验收清单（v1.3：支持 string 或 {text, check} 对象）"
+              }
+            }
+          },
+          "remaining_estimate": {
+            "type": "object",
+            "description": "剩余量估计（v2：首发块之外还剩多少，供 split 判定）",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "minLength": 1,
+                "description": "剩余什么"
+              },
+              "estimate_lines": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "剩余行数量级估计"
+              }
+            }
+          }
+        }
+      }
+    },
+    "integration": {
+      "type": "object",
+      "description": "集成验收配置（fw-integrate 消费）。check 内各开关默认 true，可置 false 关闭对应程序检查。",
+      "additionalProperties": false,
+      "properties": {
+        "contract_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "契约区路径（所有接口集中管理，默认 contracts/api.yaml）"
+        },
+        "check": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dependency_cycle": {
+              "type": "boolean",
+              "description": "依赖环检测（fw-protocol 实现，默认 true）"
+            },
+            "interface_duplicate": {
+              "type": "boolean",
+              "description": "接口重复检测（fw-protocol 实现，默认 true）"
+            },
+            "method_semantic": {
+              "type": "boolean",
+              "description": "method 语义兜底校验（写操作误标 get 检测，fw-protocol 实现，默认 true）"
+            },
+            "acceptance_conflict": {
+              "type": "boolean",
+              "description": "验收冲突检测（fw-protocol 实现，默认 true）"
+            },
+            "prediction_baseline": {
+              "type": "boolean",
+              "description": "预测基线对照（fw-integrate 实现，fw-protocol 仅承载配置）"
+            },
+            "cross_module_data_dependency": {
+              "type": "boolean",
+              "description": "跨模块数据依赖检查（fw-integrate 实现，fw-protocol 仅承载配置）"
+            }
+          }
+        }
+      }
+    }
+  }
+}

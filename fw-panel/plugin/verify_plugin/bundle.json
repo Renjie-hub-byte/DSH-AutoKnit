@@ -1,0 +1,12 @@
+{
+  "profile": "web",
+  "bundles": [
+    {
+      "id": "autoknit-panel",
+      "name": "dsh-client-ui-autoknit",
+      "entry": "../../plugins/dsh-client-ui-autoknit",
+      "enabled": true,
+      "slot": "details"
+    }
+  ]
+}

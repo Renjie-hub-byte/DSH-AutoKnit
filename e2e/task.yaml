@@ -1,0 +1,93 @@
+# framework-v1 需求7 端到端示例任务书（3 模块，含 1 次失败升级链路 + 预算闸门 warn 路径）
+# 用途：fw-protocol 校验 → fw-scaffold 生成 → fw-runner（并行+升级链+预算）→ fw-integrate 集成归档。
+# 依赖图（钻石形）：m01 → m02 / m03（同层并行，≤ max_parallel=3）
+# 升级链：m02 在 E1 两轮被打回（block 2 次）→ 换 E2（交接三件套）→ E2 修复后通过。
+# 预算：max_tokens=1500，运行累计消耗 1300（70% warn_at=1050 触发预警，不硬停）。
+task:
+  name: 端到端-订单管道
+  source_prd: e2e/PRD-订单管道.md
+  owner: 小理
+  created: "2026-08-21"
+  grade: B
+  prediction_baseline:
+    will_have:
+      - 订单数据落盘为 JSON（src/data/orders.json 结构按契约）
+      - 清洗模块产出标准化订单记录（含字段校验）
+      - 报表模块输出按日聚合的订单统计 CSV
+    will_not_have:
+      - 不做实时流式处理（本任务是批处理）
+      - 不做支付与风控联动
+
+budget:
+  max_tokens: 1500
+  warn_at: 0.7
+  stop_at: 1.0
+  per_module_max_tokens: 1000
+
+runtime:
+  models:
+    planner: deepseek-v4-pro
+    executor: deepseek-v4-flash
+    auditor: deepseek-v4-flash
+  max_parallel: 3
+  executor_max_rounds: 5
+  retry_before_switch: 2
+  max_executor_switches: 1
+  end_gate: auto
+
+modules:
+  - id: m01
+    name: 数据采集
+    layer: 1
+    objective: 读取原始订单数据并落盘为 JSON
+    dependencies: []
+    interfaces:
+      - path: /api/ingest/*
+        method: [POST, PUT]
+        note: 订单采集写入接口（数据源侧声明）
+    acceptance:
+      - 输入样例订单后生成 src/data/orders.json，字段与契约 contracts/api.yaml 一致
+      - 空输入时输出空数组而非报错
+    boundaries:
+      - 不做数据清洗（只采集落盘）
+      - 不修改上游原始文件
+
+  - id: m02
+    name: 数据清洗
+    layer: 2
+    objective: 对采集到的订单做标准化清洗与字段校验
+    dependencies: [m01]
+    interfaces:
+      - path: /api/clean/*
+        method: [POST]
+        note: 清洗结果查询接口（消费 m01 数据）
+    acceptance:
+      - 对 orders.json 清洗后产出 cleaned_orders.json，非法记录标记 drop_reason 且总数可核对
+      - 清洗规则表可查，字段类型与契约一致
+    boundaries:
+      - 不产出聚合报表（归 m03）
+      - 不改写 m01 的产物文件
+
+  - id: m03
+    name: 报表输出
+    layer: 2
+    objective: 按日聚合清洗后的订单并输出统计 CSV
+    dependencies: [m01]
+    interfaces:
+      - path: /api/report/*
+        method: [POST]
+        note: 报表生成接口（只读 m01/m02 产物）
+    acceptance:
+      - 对 orders.json 聚合出 daily_orders.csv，列名与契约一致
+      - 有测试用例覆盖空数据与单日多单两种场景
+    boundaries:
+      - 只读 m01/m02 产物，不写回数据区
+
+integration:
+  contract_file: contracts/api.yaml
+  check:
+    dependency_cycle: true
+    interface_duplicate: true
+    acceptance_conflict: true
+    prediction_baseline: true
+    cross_module_data_dependency: true

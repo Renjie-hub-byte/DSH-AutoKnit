@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://framework-v1/presets/protocol/auditor-outcome.schema.json",
+  "title": "fw-auditor 机器可解析判定（auditor-outcome.json）",
+  "description": "fw-auditor preset 的输出契约：四段（判定 verdict / blocker / root / confidence）为核心必填段，与 fw-runner DriverOutcome.from_mapping 消费字段对齐（verdict/root/confidence/reason/blocker/tokens/detail）。auditor 把本对象写入模块 tmp/auditor-outcome.json；runner 读取后统一写回 REVIEW.md 机器状态键。",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["verdict", "blocker", "root", "confidence"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ok", "interrupted", "error"],
+      "description": "驱动执行状态（fw-runner 用）；auditor 正常判完为 ok。",
+      "default": "ok"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "block"],
+      "description": "判定（四段之『判定』）：pass=通过（complete），block=不通过。"
+    },
+    "blocker": {
+      "type": "string",
+      "description": "具体 blocker（四段之『blocker』）：机器可解析文本，禁含 '|'；block 时必填具体阻碍，pass 时可为空字符串。"
+    },
+    "root": {
+      "type": "string",
+      "enum": ["self", "upstream", "contract", ""],
+      "description": "失败根因分类（四段之『root』）：self=executor 自身问题，upstream=上游未交付/依赖缺失，contract=契约/验收标准问题；block 时必填非空，pass 时留空。"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "判定置信度（四段之『confidence』）0-1；< 0.7 视为低置信，触发 pro 重审或回人仲裁（v0.4 设计 9.4）。"
+    },
+    "reason": {
+      "type": "string",
+      "description": "判定原因文本（供 REVIEW detail / 回人报告展示，可含自然语言）。"
+    },
+    "tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "本轮 auditor token 消耗估计（dsh token-meter 对接钩子；框架内默认 0）。"
+    },
+    "detail": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "结构化证据（如 done_entries / declared / missing / 对照的验收项列表），供日志与回人报告使用。"
+    }
+  }
+}

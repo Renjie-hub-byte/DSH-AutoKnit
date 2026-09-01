@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.14"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fw-runner"
+version = "1.0.0"
+description = "dsh 之上任务编排层——执行编排主循环（需求4）：拓扑调度/并行/升级链/心跳/checkpoint-resume"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PyYAML",
+    # monorepo 内兄弟包，以路径依赖方式随 fw-runner 一起安装（packaging-p0：消灭 sys.path hack）
+    "fw-protocol @ {root:uri}/../fw-protocol",
+    "fw-scaffold @ {root:uri}/../fw-scaffold",
+]
+
+[project.scripts]
+fw-runner = "fw_runner.cli:main"
+
+[tool.hatch.metadata]
+# 允许 PEP 508 直接引用（本地路径依赖 {root:uri}）
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+# 只打包 fw_runner 包；scripts/ 与 prompts/ 作为包内数据文件随包分发
+packages = ["fw_runner"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

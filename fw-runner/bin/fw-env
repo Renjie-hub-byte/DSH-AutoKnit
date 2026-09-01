@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# fw-env —— 环境准备：读 task.yaml 的 environment 声明，任务级建共享 venv 装依赖
+# 用法: fw-env <任务目录>
+#
+# 解决三类问题（2026-08-23 实测发现）：
+#   1. executor 装依赖占用干活 timeout（装依赖被 kill）
+#   2. 每模块重复装（m01 装 pytest，m02 又装一遍）
+#   3. 版本不一致（executor 用 python3.14，fw 框架用 python3.11）
+#
+# 设计：任务级一个共享 venv（python3.11，与 fw-runner 一致），聚合所有模块的
+#   python_packages 装一次。executor 干活时用这个 venv 的 python，不自己装。
+set -uo pipefail
+
+TASK_DIR="${1:-}"
+[ -n "$TASK_DIR" ] || { echo "用法: fw-env <任务目录>"; exit 1; }
+[ -d "$TASK_DIR" ] || { echo "✗ 任务目录不存在: $TASK_DIR"; exit 1; }
+TASK_DIR="$(cd "$TASK_DIR" && pwd)"
+
+PY="${FW_PYTHON:-python3.11}"
+VENV="$TASK_DIR/.venv"
+
+# 1. 聚合所有模块的 environment 声明
+echo "[fw-env] 读 task.yaml 聚合依赖声明…"
+AGG="$(python3.11 - "$TASK_DIR/task.yaml" <<'PYEOF'
+import sys, yaml
+try:
+    doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+except Exception as e:
+    print(f"ERR: {e}", file=sys.stderr); sys.exit(1)
+pkgs, tools = set(), set()
+for m in (doc.get("modules") or []):
+    env = m.get("environment") or {}
+    for p in (env.get("python_packages") or []):
+        pkgs.add(p)
+    for t in (env.get("system_tools") or []):
+        tools.add(t)
+print("PKGS:" + " ".join(sorted(pkgs)))
+print("TOOLS:" + " ".join(sorted(tools)))
+PYEOF
+)"
+PKGS="$(echo "$AGG" | grep '^PKGS:' | sed 's/^PKGS://')"
+TOOLS="$(echo "$AGG" | grep '^TOOLS:' | sed 's/^TOOLS://')"
+
+echo "[fw-env] python_packages: ${PKGS:-（无）}"
+echo "[fw-env] system_tools: ${TOOLS:-（无）}"
+
+# 2. system_tools 只提示不自动装（系统工具装法各异，交给用户）
+if [ -n "$TOOLS" ]; then
+  echo "[fw-env] ⚠️ 需要系统工具（请手动确认已装）: $TOOLS"
+fi
+
+# 3. 任务级共享 venv（python3.11，与 fw-runner 一致）
+if [ ! -d "$VENV" ]; then
+  echo "[fw-env] 创建任务级 venv: $VENV（$PY）…"
+  "$PY" -m venv "$VENV" || { echo "✗ venv 创建失败"; exit 1; }
+fi
+
+# 4. 装 python 依赖
+if [ -n "$PKGS" ]; then
+  echo "[fw-env] 安装 python 依赖: $PKGS"
+  "$VENV/bin/pip" install --quiet $PKGS || { echo "✗ pip install 失败（可手动重试: $VENV/bin/pip install $PKGS）"; exit 1; }
+fi
+
+echo "[fw-env] ✅ 环境就绪: $VENV/bin/python（$("$VENV/bin/python" --version 2>&1)）"
+echo "[fw-env] 接下来: fw-run \"$TASK_DIR\"（executor 会用这个 venv 的 python）"
