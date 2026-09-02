@@ -1,0 +1,28 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # PyPI Trusted Publisher（无需 token）
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Assemble package (framework snapshot as bundled resource)
+        run: |
+          mkdir -p pypi-build/autoknit_pkg
+          cp -R framework-v1 pypi-build/autoknit_pkg/framework
+          rm -rf pypi-build/autoknit_pkg/framework/.git
+          cp pypi/pyproject.toml pypi/PYPI.md pypi-build/
+          cp pypi/autoknit_pkg/*.py pypi-build/autoknit_pkg/
+          cd pypi-build && python -m pip install -q build && python -m build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pypi-build/dist
