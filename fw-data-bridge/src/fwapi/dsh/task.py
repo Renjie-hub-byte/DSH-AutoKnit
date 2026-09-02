@@ -55,11 +55,14 @@ DISPATCH_FILE = os.path.join("总日志", "dispatch.jsonl")
 # 未枚举事件/无合法 seq 的事件确定性过滤，不编造、不落到 unknown）。
 TIMELINE_EVENTS: tuple = (
     "run.start",
+    "run.resume",
     "module.dispatch",
     "executor.round.start",
     "executor.round.done",
     "auditor.round.start",
     "auditor.round",
+    "module.needs_human",
+    "module.human_rerun",
     "module.split",
     "module.aggregated",
     "module.final_block",
@@ -558,7 +561,39 @@ def get_run_tree(task_dir: str, run_id: str) -> Optional[Dict[str, Any]]:
         "dependencies": dependencies,
         "per_module": per_module,
         "needs_human": _coerce_str_list(snapshot.get("needs_human")),
+        # human_answer.json 与快照同源（tdir=注册表定位的任务目录），不能用
+        # 请求级 task_dir（前端不带 → 空串读错目录）。
+        "human_answers": read_human_answers(tdir),
     }
+
+
+def read_human_answers(task_dir: str) -> Dict[str, Dict[str, str]]:
+    """读 总日志/human_answer.json → {mid: {code,text,answered_at,reason}}（只增字段）。
+
+    决策卡片三态生命周期用：code 存在且非 '?' = 人已回复（resolved-by-human）；
+    草稿/代填文本也在此透出（避免重复决策）。文件缺失/损坏/形态不符 → 确定性
+    {}，绝不抛异常；未知字段丢弃（只透出契约四项）。
+    """
+    path = os.path.join(task_dir, "总日志", "human_answer.json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    answers = payload.get("answers") if isinstance(payload, dict) else None
+    if not isinstance(answers, dict):
+        return {}
+    out: Dict[str, Dict[str, str]] = {}
+    for mid, rec in answers.items():
+        if not isinstance(rec, dict) or not isinstance(mid, str) or not mid:
+            continue
+        out[mid] = {
+            "code": _coerce_str(rec.get("code")),
+            "text": _coerce_str(rec.get("text")),
+            "answered_at": _coerce_str(rec.get("answered_at")),
+            "reason": _coerce_str(rec.get("reason")),
+        }
+    return out
 
 
 # ============================================================ 事件流数据源 ====

@@ -115,7 +115,9 @@ fi
 echo "[fw-new] task.yaml 已生成（$(wc -l < "$TASK_YAML") 行）"
 
 # 人确认（仅第一次；重试是自动修正，不再问）
-if [ "$ATTEMPT" -eq 1 ] && [ "${FW_SKIP_CONFIRM:-0}" != "1" ]; then
+# v2(2026-09-02): 场景自适应——交互终端挂起等人审（语义=窗口挂着答复了继续）；
+# 非交互环境（定时/自动化，stdin 非 TTY）不悬挂：提案已落盘 task.yaml，scaffold 校验兜底后自动继续
+if [ "$ATTEMPT" -eq 1 ] && [ "${FW_SKIP_CONFIRM:-0}" != "1" ] && [ -t 0 ]; then
   echo ""
   echo "════════ 规划提案（请审阅）════════"
   "$FW_PY" - "$TASK_YAML" <<'PYEOF'
@@ -144,6 +146,8 @@ PYEOF
     exit 1
   fi
   echo "✅ 已确认，继续生成任务目录…"
+elif [ "$ATTEMPT" -eq 1 ]; then
+  echo "✅ 无人值守模式：提案已归档（task.yaml），scaffold 校验兜底，自动继续…"
 fi
 
   # fw-protocol 校验（scaffold 内部会校验，这里直接跑 scaffold）

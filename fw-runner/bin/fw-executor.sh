@@ -207,6 +207,28 @@ try:
 except Exception:
     pass
 
+# F2v2(2026-09-02): 上轮打回原因从【运行时快照】取——任务书 yaml 无 reason 字段，
+# v1 补丁读 mod.get("reason") 静默失效（v3 实测 EXEC_TASK 0 命中）。同时注入人审意见。
+import json as _json
+last_reason = ""
+last_verdict = ""
+human_reply = ""
+try:
+    _snap = _json.load(open("../../总日志/快照.json", encoding="utf-8"))
+    _pm = (_snap.get("per_module") or {}).get(str(mod.get("id") or ""), {})
+    last_reason = str(_pm.get("reason") or "").strip()
+    last_verdict = str(_pm.get("verdict") or "").strip()
+except Exception:
+    pass
+try:
+    _ha = _json.load(open("../../总日志/human_answer.json", encoding="utf-8"))
+    _ans = (_ha.get("answers") or {}).get(str(mod.get("id") or ""), {})
+    _code = str(_ans.get("code") or "?")
+    if _code and _code != "?":
+        human_reply = "[" + _code + "] " + str(_ans.get("text") or "").strip()
+except Exception:
+    pass
+
 print(f"\n【总 · 任务全貌】")
 print(f"- 总目标: {goal}")
 if wnh:
@@ -277,6 +299,12 @@ if bs:
 print("")
 print("【前轮反馈 · 上轮已做（续做定位，仅供回顾）】")
 print(f"- {review_summary or '（无/首轮，这是正常的）'}")
+if last_reason and last_verdict != "pass":
+    print(f"- ⚠️ 上轮打回原因（先纠正此问题再续做）：{last_reason}")
+    if ("src" in last_reason) or ("产物" in last_reason):
+        print("- 契约提醒：交付物必须落在模块 src/ 下（下游 merge/auditor 采证/跨模块复用全按 src 收取），放错位置请移动归位。")
+if human_reply:
+    print(f"- 🙋 人审意见（真人已阅，优先级最高，遵照执行）：{human_reply}")
 print("")
 print("【本 · 本轮唯一任务 ⭐（最重要，最后执行指令）】")
 if FINAL_BLOCK:

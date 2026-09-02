@@ -277,6 +277,7 @@ class FwApiHandler(BaseHTTPRequestHandler):
             event_source.check_task_updates(task_dir)
             event_source.check_dispatch_events(task_dir)
             event_source.check_runs_updates()
+            event_source.check_human_answer_updates(task_dir)
             events = event_source.events_since(task_dir, since)
             if events or wait <= 0 or time.time() >= deadline:
                 self._send_json(events)

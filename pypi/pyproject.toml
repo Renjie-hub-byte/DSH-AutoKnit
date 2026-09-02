@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autoknit"
-version = "1.0.0"
+version = "1.0.1"
 description = "AutoKnit — divide-and-conquer PRD execution framework: PRD in, stable maintainable code out. Program does the scheduling (0 token), LLM only thinks."
 readme = "PYPI.md"
 requires-python = ">=3.11"

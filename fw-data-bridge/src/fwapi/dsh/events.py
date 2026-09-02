@@ -181,6 +181,47 @@ def check_dispatch_events(task_dir: str) -> List[Dict[str, Any]]:
     return emitted
 
 
+def check_human_answer_updates(task_dir: str) -> List[Dict[str, Any]]:
+    """diff human_answer.json（mtime）→ 有新回复产出 task.update 事件。
+
+    动机（2026-09-02 杰哥实测）：runner 只在 --resume 启动时消费 human_answer.json，
+    运行中/退出后快照 needs_human 不变 → 长轮询无事件 → 面板「已解决」态永远刷不出来
+    （人回复了石沉大海）。回复写入本身就该是一个事件：回复 → 面板立即可见已解决。
+    幂等：mtime 未变不产生事件；首次观测（基线建立）不产生事件。
+    """
+    path = os.path.join(task_dir, "总日志", "human_answer.json")
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return []
+    with _lock:
+        bucket = _bucket(task_dir)
+        last = bucket.get("human_answer_mtime", 0.0)
+        bucket["human_answer_mtime"] = mtime
+        if mtime <= last or last == 0.0:
+            return []
+        try:
+            data = json.load(open(path, encoding="utf-8"))
+            answers = data.get("answers") or {}
+        except Exception:
+            answers = {}
+        # 定位事件归属 run：优先 stage=needs_human 的活跃 run，否则最新 run
+        try:
+            items = task_source.list_tasks(task_dir)
+        except Exception:
+            items = []
+        target = next((it for it in items if it.get("stage") == "needs_human"),
+                      items[0] if items else None)
+        if target is None:
+            return []
+        emitted: List[Dict[str, Any]] = []
+        for mid, ans in answers.items():
+            code = str((ans or {}).get("code") or "?")
+            if code and code != "?":
+                emitted.append(_emit(bucket, "task.update", target["run_id"], "needs_human"))
+        return emitted
+
+
 def check_runs_updates() -> List[Dict[str, Any]]:
     """diff 注册表 run 状态与上次观测，产出 runs 级事件并更新快照。
 

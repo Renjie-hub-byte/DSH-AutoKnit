@@ -31,8 +31,15 @@
                （models/max_parallel/executor_max_rounds/retry_before_switch/max_executor_switches/
                end_gate）+ modules + integration（contract_file/check）
             2. 每个模块：id/name/layer（≤3）/objective（一句话高内聚）/dependencies（依赖图无环）/
-               interfaces（只到前缀+方法，禁止定义字段）/acceptance（可检查、可执行验证）/
+               interfaces（只到前缀+方法，禁止定义字段；method 必须非空——HTTP 接口填 get/post/put/delete 等，非 HTTP 接口（插件槽位/CLI/事件）按实际语义填 plugin/cli/event 等，禁止空数组 []）/acceptance（可检查、可执行验证）/
                boundaries（硬墙）/round_estimate（预估 executor 轮数，必填）/max_rounds_override（默认继承 runtime）
+                ⚠️ 交付位置规则（2026-09-02 杰哥定调）：每个模块的交付物一律约定落在该模块工作目录的
+                src/ 下（框架契约：merge/auditor 采证/跨模块复用全按 src/ 收取）。PRD 或需求中提到的
+                其他目录（如 dsh-dev/ 等底座）是【只读工作对象/参考】，不是交付位置——acceptance 里
+                不得出现「交付/写入到 src/ 以外目录」的验收项；基于外部底座开发的，验收项写成
+                「交付物在模块 src/ 下 + 对底座只读不写」。验收项还须【可达】：不依赖模块目录之外的
+                资源做判定（coldstart-v3 m01 验收5 教训）。
+                python_packages 必须用 pip 正式包名（pyyaml 而非 yaml、Pillow 而非 PIL）——import 名 ≠ 包名，写错装不上即环境失败。
             3. 预测基线 prediction_baseline：写「最终交付会有什么（will_have）/ 不会有什么
                （will_not_have）」，执行后 auditor 对照用
             4. 契约区 contracts/api.yaml（所有接口集中管理）

@@ -570,9 +570,14 @@ def _run_module(ctx: TaskContext, state: RunState, mid: str,
             state.modules[mid] = "done"
             if mid not in state.completed_order:
                 state.completed_order.append(mid)
+            # F3fix(2026-09-02): 模块 done 时同步清 needs_human 标记——框架流程解决路径
+            # （auditor pass / 归位续跑通过）也要闭环，否则面板「等待处理」永不消失
+            if mid in state.needs_human:
+                state.needs_human = [m for m in state.needs_human if m != mid]
             events.emit("module.done", module=mid, detail={
                 "auditor_round": astate.auditor_round, "root": root,
                 "confidence": aout.confidence, "executor_round": astate.executor_round,
+                "needs_human_resolved_by": "process",
                 "remaining_lines": rem,
             })
             return DONE
@@ -710,8 +715,12 @@ def _aggregate_parents(ctx: TaskContext, state: RunState, events: EventLog) -> b
             astate.ended_at = now_iso()
             if mid not in state.completed_order:
                 state.completed_order.append(mid)
+            # F3fix: split 容器聚合完成同样清 needs_human（子模块递归解决后父级不应残留）
+            if mid in state.needs_human:
+                state.needs_human = [m for m in state.needs_human if m != mid]
             events.emit("module.aggregated", module=mid, detail={
                 "children": astate.child_modules, "split_depth": astate.split_depth,
+                "needs_human_resolved_by": "process",
             })
             progressed = True
             changed = True

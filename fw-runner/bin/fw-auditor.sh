@@ -149,6 +149,20 @@ wnh = pb.get("will_not_have") or []
 if wnh:
     lines.append("【总 · 明确不做 will_not_have】" + "；".join(str(x) for x in wnh[:4]))
 fb = mod.get("first_block") or {}
+# F1-fix(2026-09-02): 人审意见注入——needs_human 回人后人已表态，auditor 必须知道人的决定再采证
+import json as _json
+import os as _os_h
+try:
+    _ha = _json.load(open(_os_h.path.join("..", "..", "总日志", "human_answer.json"), encoding="utf-8"))
+    _mid = str(mod.get("id") or "")
+    _ans = (_ha.get("answers") or {}).get(_mid, {})
+    _code = str(_ans.get("code") or "?")
+    if _code and _code != "?":
+        lines.append("【人审意见 · 真人已阅（★ 约束本轮判定）】")
+        lines.append(f"  - 人决定: [{_code}] " + str(_ans.get("text") or "").strip()[:300])
+        lines.append("  - 人接受现状/放行的项：不强行判 fail，在 audit-result.json 的 human_pending 原样保留；人给新指令的：按指令核。")
+except Exception:
+    pass
 import os as _os
 FINAL_BLOCK = _os.environ.get("FW_FINAL_BLOCK") == "1"
 if FINAL_BLOCK:

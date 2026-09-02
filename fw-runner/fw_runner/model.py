@@ -63,7 +63,7 @@ class RunConfig:
     retry_remaining_threshold: int = 2  # 剩余交付物 ≤ N 项 → 续做；>N → split（v2 贪心判定，partial 粒度）
     split_exit_threshold: int = 1000    # 出口判定（杰哥 2026-08-26 拍板试点）：剩余行数 ≤ N → 收官/final 续做，>N → split
     audit_require_evidence: bool = True  # BUG-002a（2026-08-25）：auditor pass 必须带证据等级（L1/L2），L3 无实证 → 回人
-    max_partial_rounds: int = 5         # 连续 partial 超 N 次 → 回人（防死循环兜底）
+    max_partial_rounds: int = 2         # 连续 partial 超 N 次 → 回人（杰哥 20260902：同因打回 1 次重试，第 2 次回人；结构性不可达靠重试无意义）
     split_merge_after_fails: int = 3    # 子模块连续失败次数达阈值合并回父
     enable_fallback_model: bool = True  # 是否启用 pro 兜底
     fallback_model: str = "pro"         # 兜底模型（仅当前叶子模块）
