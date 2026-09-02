@@ -17,8 +17,7 @@ jobs:
       - name: Assemble package (framework snapshot as bundled resource)
         run: |
           mkdir -p pypi-build/autoknit_pkg
-          cp -R framework-v1 pypi-build/autoknit_pkg/framework
-          rm -rf pypi-build/autoknit_pkg/framework/.git
+          rsync -a --exclude '.git' --exclude 'pypi-build' --exclude '.github' ./ pypi-build/autoknit_pkg/framework/
           cp pypi/pyproject.toml pypi/PYPI.md pypi-build/
           cp pypi/autoknit_pkg/*.py pypi-build/autoknit_pkg/
           cd pypi-build && python -m pip install -q build && python -m build
