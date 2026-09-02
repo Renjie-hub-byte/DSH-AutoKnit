@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-**Throw in a PRD — it decomposes tasks, dispatches agents, verifies acceptance, and splits recursively on its own. Fewer tokens in, more stable and more maintainable code out.**
+**Throw in a PRD — it decomposes tasks, dispatches agents, verifies acceptance, and splits recursively on its own. Cheap to build, cheaper to maintain, zero babysitting.**
 
 AutoKnit is an open-source divide-and-conquer execution framework that sits between "chatting with your agent step by step gets exhausting" and "enterprise-grade heavy frameworks are too expensive". It never burns context playing "general coordinator": **the program does all scheduling (0 tokens), LLMs only contribute intelligence**. You review the plan once, and merge the code once at the end.
 
