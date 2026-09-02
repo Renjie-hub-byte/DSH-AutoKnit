@@ -54,7 +54,10 @@ def _install_framework() -> None:
 
 
 def main() -> None:
-    if "--pkg-setup" not in sys.argv:
+    if "--pkg-setup" in sys.argv:
+        ensure_installed()
+        return
+    if True:
         marker = VERSION_FILE.read_text(encoding="utf-8").strip() if VERSION_FILE.is_file() else ""
         if not FW_HOME.is_dir() or marker != __version__:
             _install_framework()
