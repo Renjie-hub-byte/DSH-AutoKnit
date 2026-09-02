@@ -78,6 +78,7 @@ AutoKnit fills exactly this gap: **engineering and contracts replace "repeated c
 | | Billed tokens | Delivery (lines) | Tests | Time |
 |---|---|---|---|---|
 | AutoKnit (cold start, packaged artifact) | **748,802** | 3,866 | **102** | **~37 min** |
+| AutoKnit (v4 rerun: fixed engine + UCD upstream digest, 2026-09-03) | **701,977** | 2,696* | 95 | **~33.6 min** |
 | lh-harness | 1,267,832 | 4,727 | ~44 | 130.5 min |
 | Single interactive agent | 926,171 | 1,784 | 48 | ~4.5h |
 
@@ -103,7 +104,13 @@ Real scenario: you ask an agent to change a feature; it first figures out "which
 3. **The interactive agent's cheapness excludes audit**: its billing has no independent acceptance. Auditing three interactive deliverables at equivalent strength cost us 559K afterwards (~190K each) — **the interactive agent's true cost = generation + audit**. AutoKnit's auditor is built in; the quote includes verification.
 4. **Modification blast radius is predictable and quotable**: an agent's inherent flow when changing code is "read the structure → predict which files to touch → change them → run tests". Because AutoKnit's deliverables are **decomposed + modularized + contract-bounded**, what the agent reads is a clean module topology — measured prediction deviation ≤±1, maximally avoiding the three rework accidents: incomplete changes, one-touch-ripples-to-many, and shipping problems from half-finished edits. **Test density of 26.4/1k lines is 3× the baselines — the same lines of code, with over 3× the test escort.**
 
-### Sweet spot (honest boundaries)
+#### Divide and conquer without reinventing wheels: UCD upstream digest (0 tokens)
+
+The classic cost of module-level divide-and-conquer: each module runs in its own clean session and doesn't know what the others already built — wheels get reinvented. AutoKnit solves this with **UCD (upstream capability digest)**: once an upstream module passes acceptance, the **program** (AST extraction, 0 tokens) generates an `UPSTREAM.md` — public interfaces, function signatures, one-line purposes — injected into the downstream executor's startup context. Downstream modules `import` and reuse directly, **without reading upstream source** (contracts + digest suffice; coupling stays low) — freeing capacity for robust code, tests, and documentation.
+
+v4 rerun (2026-09-03, fixed engine + UCD): same PRD, same baseline — 701,977 billed (-6.3% vs baseline), 33.6 min, 95 test cases, 26.5% doc density (docstrings counted). **The isolation dividend of divide-and-conquer and the reuse dividend of a monolith, at the same time.**
+
+## Sweet spot (honest boundaries)
 
 | Task size | Recommendation |
 |---|---|
