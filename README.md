@@ -224,7 +224,7 @@ Today's agents can already "ask clarifying questions and turn a vague requiremen
 ### Dependencies (from zero)
 
 1. Python 3.11+, git, npm
-2. `git clone https://github.com/Renjie-hub-byte/DSH-AutoKnit.git && cd DSH-AutoKnit && bash install.sh` — installs the `autoknit` command in one shot (incl. fw-protocol / fw-scaffold / the data bridge)
+2. `pip install autoknit` — installs the `autoknit` command in one shot (framework bundled; incl. fw-protocol / fw-scaffold / the data bridge). Source route: `git clone https://github.com/Renjie-hub-byte/DSH-AutoKnit.git && cd DSH-AutoKnit && bash install.sh`
 3. Install [dsh](docs/quickstart.md appendix A) (the DeepSeek harness, `npm install -g @deepseek-ai/dsh`) and log in, or point `~/.autoknit/config.yml` at your dsh path and credentials
 4. `autoknit doctor` — one-shot health check: dsh binary / credentials / model routing / panel connectivity, with human-readable fix instructions for anything missing
 
@@ -277,8 +277,7 @@ Today's agents can already "ask clarifying questions and turn a vague requiremen
 ## 7. Quick start
 
 ```bash
-git clone https://github.com/Renjie-hub-byte/DSH-AutoKnit.git
-cd DSH-AutoKnit && bash install.sh   # one-shot: autoknit command + data bridge
+pip install autoknit                 # one-shot: autoknit command + data bridge (source route: clone + bash install.sh)
 autoknit doctor                  # health check, with fix instructions
 # Prepare a PRD (have your agent interview you and produce one)
 autoknit plan-only <task dir>    # review the plan

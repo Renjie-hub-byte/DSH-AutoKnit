@@ -224,7 +224,7 @@ executor 的全部世界就是这份契约 + 自己的模块目录——它不�
 ### 依赖（从零开始）
 
 1. Python 3.11+、git、npm
-2. `git clone https://github.com/Renjie-hub-byte/DSH-AutoKnit.git && cd DSH-AutoKnit && bash install.sh` —— 一键装好 `autoknit` 命令（含 fw-protocol / fw-scaffold / 数据桥）
+2. `pip install autoknit` —— 一键装好 `autoknit` 命令（框架已打包内置，含 fw-protocol / fw-scaffold / 数据桥）。源码方式：`git clone https://github.com/Renjie-hub-byte/DSH-AutoKnit.git && cd DSH-AutoKnit && bash install.sh`
 3. 安装 [dsh](docs/quickstart.md 附录 A)（DeepSeek harness，`npm install -g @deepseek-ai/dsh`）并登录，或在 `~/.autoknit/config.yml` 指定你的 dsh 路径与凭据位置
 4. `autoknit doctor` —— 一键体检：dsh 二进制 / 凭据 / 模型路由 / 面板连通性，缺什么告诉你怎么装
 
@@ -277,8 +277,7 @@ executor 的全部世界就是这份契约 + 自己的模块目录——它不�
 ## 七、快速开始
 
 ```bash
-git clone https://github.com/Renjie-hub-byte/DSH-AutoKnit.git
-cd DSH-AutoKnit && bash install.sh   # 一键安装：autoknit 命令 + 数据桥
+pip install autoknit                 # 一键安装：autoknit 命令 + 数据桥（源码方式：clone + bash install.sh）
 autoknit doctor                  # 环境体检，缺什么怎么装
 # 准备 PRD（让你的 Agent 跟你聊需求后产出）
 autoknit plan-only <任务目录>     # 审规划
