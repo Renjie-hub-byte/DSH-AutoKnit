@@ -5,6 +5,45 @@
 
 ---
 
+## 2026-09-03 —— v1.0.1：BUG-124 全链修复 + 人工决策语义（压测复跑实战）
+
+> 触发：coldstart 复跑压测（同 PRD 同基线两晚对照）。v2 暴露 BUG-124 空转卡死；
+> 修复后 v4 干净收官：701,977 计费 / 33.6min / 0 打回 0 换人 0 回人（vs 基线 748,802 / ~37min，n=2）。
+
+### 1. fw-runner/bin/fw-executor.sh —— HAS_PRODUCT 误判 + EXEC_TASK 反馈失忆（BUG-124 核心）
+- **改动**：① 产物检测 src/ 为空时，打回信息写明 src/ 契约+纠正动作+模块自查清单（不再只说"未产出实质产物"）
+  ② EXEC_TASK【前轮反馈】从运行时快照取上轮打回原因（v1 读任务书 yaml 静默失效）+ 人审意见注入
+- **为什么**：m03 面板插件交付位置合法但不在 src/ → 粗筛误判空壳 → 6 轮失忆空转烧 ~20 万 token；
+  executor 不知道为何被打回就会重复犯错
+- **验证**：v4 全程未触发一次无效打回；partial 阈值收紧后无隐性成本
+
+### 2. fw-runner/fw_runner/{model,runner}.py —— partial 升级阈值 + needs_human 生命周期
+- **改动**：`max_partial_rounds` 5→2（同因打回 1 次重试，第 2 次回人）；模块 done（含 split 聚合）时
+  清 needs_human 标记 + 事件带 `needs_human_resolved_by`
+- **为什么**：root=upstream 的结构性 partial 重试是无效功；「等待人工」窗口在流程自愈后不消失，
+  人永远分不清新旧的待处理
+- **验证**：v4 三模块每模块恰好 2 轮，0 空转；面板窗口随 done 闭环
+
+### 3. fw-runner/bin/fw-auditor.sh —— 人审意见注入采证上下文
+- **改动**：auditor 任务书新增【人审意见 · 真人已阅】段（human_answer.json answers[mid]）
+- **为什么**：needs_human 回人后人已表态，auditor 不知道人的决定就会对同因盲目打回；
+  人接受现状的项不强行判 fail（human_pending 原样保留）
+- **验证**：静态验证 + 数据契约对齐
+
+### 4. fw-panel + fw-data-bridge —— 决策卡三态 + 回复事件（小澈交付）
+- **改动**：决策卡问询 5 项（模块/原因/时间/ABCD 含义/草稿）；三态 pending→resolved(人/流程)→关闭；
+  文本回复智能归类 custom；桥 +`check_human_answer_updates`（人回复即事件，面板立即可见已解决）
+- **为什么**：人在环没上下文没法决策（杰哥实测「我没法决策啊」）；人回复后前端不刷新（石沉大海）
+- **验证**：pytest 115 / npm 120 / verify 11/11；对拍桥桶总和 = token 总账精确相等
+
+### 5. presets/fw-planner + fw-tools/fw-new.sh + fw-env-bootstrap —— 源头防歪三件
+- **改动**：① planner 词汇表（interfaces.method 非空、python_packages 用 pip 正式包名）
+  ② planner 交付位置规则（交付一律模块 src/，PRD 其他目录为只读工作对象，验收必须可达）
+  ③ fw-new 确认场景自适应（交互挂起人工审/无人值守自动继续）④ bootstrap set -u 防御
+- **为什么**：planner 输出 method:[] / 包名 yaml / 交付位置歧义 / 无人值守悬挂——全是实测踩过的
+- **验证**：v4 planner 一次过 scaffold 校验、环境预置通过
+
+
 ## 2026-08-21 —— 首战（ai扩展资源库v2）修复台账
 
 ### 1. fw-runner/fw_runner/model.py —— DriverOutcome.substance 丢失
