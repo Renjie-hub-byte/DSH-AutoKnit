@@ -32,7 +32,7 @@ UPSTREAM_OK = True
 
 TASK_YAML = """\
 name: dsh_cockpit_m01_split验证
-owner: 杰哥
+owner: Owner
 created: '2026-08-23'
 grade: B
 """

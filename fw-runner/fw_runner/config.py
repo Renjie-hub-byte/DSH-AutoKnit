@@ -16,8 +16,9 @@ from typing import Any, Dict, Mapping, Optional
 RUNTIME_KEYS = (
     "max_parallel", "executor_max_rounds", "retry_before_switch",
     "max_executor_switches", "heartbeat_n_rounds", "checkpoint_every", "end_gate",
-    "mode", "split_max_depth", "split_exit_threshold", "retry_remaining_threshold",
-    "audit_require_evidence", "enable_split",
+    "mode", "split_max_depth", "split_max_total", "split_exit_threshold",
+    "retry_remaining_threshold",
+    "split_protocol_retries", "audit_require_evidence", "enable_split",
 )
 
 # 各角色的物理键映射：yaml 键 → (env 键, CLI/model-patch 键)

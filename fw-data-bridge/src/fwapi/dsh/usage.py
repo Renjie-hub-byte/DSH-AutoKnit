@@ -7,7 +7,7 @@ B. run_usage —— GET /api/runs/{id}/usage：基于会话索引（session_inde
    run 级 + planner 级 + per-module 消耗。查询是索引直查（毫秒级），不再每次
    请求全扫/起子进程（补丁债「刷新慢」根治）。
 
-口径（杰哥拍板 2026-09-01，与 pi-ai provider 语义对齐）：
+口径（Owner拍板 2026-09-01，与 pi-ai provider 语义对齐）：
 - 会话文件 inputTokens = 非缓存输入（pi-ai 层 input = prompt_tokens − cacheRead
   − cacheWrite），cacheReadTokens 独立上报；
 - billable（计费）= input + output（非缓存）；缓存读单独一列，不计入计费；
@@ -213,7 +213,7 @@ def _finish(bucket: Dict[str, int], tmin: int, tmax: int) -> Dict[str, Any]:
     """补齐口径字段：billable（input+output）、total_input、cache_rate、duration_ms。
 
     口径源头：pi-ai provider 层 input = prompt_tokens − cacheRead（非缓存输入），
-    billable（杰哥拍板 2026-09-01）= 非缓存输入 + 输出；缓存读单独一列不计费。
+    billable（Owner拍板 2026-09-01）= 非缓存输入 + 输出；缓存读单独一列不计费。
     """
     out = dict(bucket)
     out["billable"] = out["input"] + out["output"]

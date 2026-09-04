@@ -19,13 +19,13 @@ SCAFFOLD="$FW1/fw-scaffold/bin/fw-scaffold"
 DSH_BIN="${DSH_BIN:-$HOME/Library/Application Support/QClaw/npm-global/bin/dsh}"
 FW_PY="${FW_PY:-python3.11}"   # 需含 yaml（fw-new 人确认段同用）
 
-# 独立 DSH_HOME：fw 专用环境，不碰主 ~/.dsh（小理等 agent 用 pro 不受影响）
+# 独立 DSH_HOME：fw 专用环境，不碰主 ~/.dsh（PM等 agent 用 pro 不受影响）
 FW_DSH_HOME="${FW_DSH_HOME:-$HOME/.fw-dsh}"
 export DSH_HOME="$FW_DSH_HOME"
 
 [ $# -lt 1 ] && echo "用法: fw-new.sh <PRD.md> [--name 任务名] [--owner 负责人] [--out 目录]" && exit 1
 PRD="$1"; shift
-NAME=""; OWNER="杰哥"; OUT=""
+NAME=""; OWNER="Owner"; OUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME="$2"; shift 2;;

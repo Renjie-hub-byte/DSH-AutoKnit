@@ -1,0 +1,2 @@
+[console_scripts]
+fw-scaffold = fw_scaffold.cli:main

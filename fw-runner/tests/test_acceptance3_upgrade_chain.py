@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from helpers import unavailable_split_driver
 from fw_runner.context import load_task_context
 from fw_runner.drivers import InlineAgentDriver
 from fw_runner.model import DriverOutcome
@@ -56,7 +57,8 @@ def test_block_twice_then_switch_then_human(single_root):
     h = _BlockHarness()
     exec_driver, aud_driver = h.build()
 
-    result = run(single_root, executor_driver=exec_driver, auditor_driver=aud_driver)
+    result = run(single_root, executor_driver=exec_driver, auditor_driver=aud_driver,
+        split_driver=unavailable_split_driver())
 
     # 1) 升级链轮次与 executor 身份：block 2 次 → 换 executor → SPLIT 尝试拆分 → 回人
     assert h.exec_seq == [(1, "E1"), (2, "E1"), (3, "E2"), (4, "E2")], h.exec_seq

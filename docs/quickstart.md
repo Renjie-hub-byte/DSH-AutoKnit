@@ -20,8 +20,8 @@
 ## 2. 安装 AutoKnit
 
 ```bash
-git clone https://github.com/Renjie-hub-byte/DSH-AutoKnit.git
-cd DSH-AutoKnit && bash install.sh   # rsync + venv + editable 安装，装好 autoknit 命令
+git clone https://github.com/Renjie-hub-byte/autoknit.git
+cd autoknit/framework-v1 && bash install.sh   # rsync + venv + editable 安装，装好 autoknit 命令
 ```
 
 安装后验证：

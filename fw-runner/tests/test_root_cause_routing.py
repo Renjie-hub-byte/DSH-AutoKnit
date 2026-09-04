@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from helpers import unavailable_split_driver
 from fw_runner.context import load_task_context
 from fw_runner.drivers import InlineAgentDriver
 from fw_runner.model import DriverOutcome
@@ -36,7 +37,8 @@ def test_upstream_contract_thrown_to_human_no_retry(single_root, root_cause):
                              blocker=f"{root_cause} blocker")
 
     result = run(single_root, executor_driver=InlineAgentDriver(executor),
-                 auditor_driver=InlineAgentDriver(auditor))
+                 auditor_driver=InlineAgentDriver(auditor),
+                 split_driver=unavailable_split_driver())
 
     assert result.status == "needs_human"
     assert result.needs_human == ["m01"]
@@ -71,6 +73,7 @@ def test_self_root_retries_not_thrown(single_root, harness):
     harness.audit_fn = audit_fn
     result = run(single_root, executor_driver=harness.make_executor(),
                  auditor_driver=harness.make_auditor(),
+                 split_driver=unavailable_split_driver(),
                  overrides={"retry_before_switch": 2, "max_executor_switches": 1})
     # block1→retry E1；block2→换 E2；block3→retry E2；block4→SPLIT → 拆分失败回人
     assert result.status == "needs_human"

@@ -96,6 +96,11 @@ def detect_signature_mismatches(modules: List[ModuleSource]) -> List[Conflict]:
     cannot bind to a single shape, so the item is flagged ``signature_mismatch``
     and needs a human to unify the signature (or add an adapter).
 
+    BUG-20260904 修复：下划线开头 = 模块私有（Python 惯例），不是跨模块契约，
+    不参与比对。此前 script2video 合并时三条误报全是私有符号被卷入
+    （``_scene_type`` vs ``SceneType``、``_resolve_root`` vs ``resolve_root``、
+    ``_load_manifest`` vs ``load_manifest``），只能人肉放行。
+
     Returns:
         Sorted list of ``signature_mismatch`` entries (empty when none).
     """
@@ -105,6 +110,8 @@ def detect_signature_mismatches(modules: List[ModuleSource]) -> List[Conflict]:
         if not mod.has_src():
             continue
         for sym, sig in extract_signatures(mod.src_dir).items():
+            if sym.startswith("_"):
+                continue  # 模块私有 helper 不构成跨模块接口契约
             norm = normalize_interface_name(sym)
             key = sig.key()
             groups.setdefault(norm, {}).setdefault(key, set()).add(mod.id)

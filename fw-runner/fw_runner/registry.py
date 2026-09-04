@@ -188,6 +188,10 @@ def complete_run(run_id: str, registry_path: Optional[str] = None) -> bool:
 
     失败绝不抛异常（仅返回 False）。resume 后真正收官也会调用 —— 该 run 一直以
     active 挂在注册表，直到全部完成/回人/中断等终态才置 complete。
+
+    归档终态保护（2026-09-01）：已 archived 的 run 是用户显式决策的终态，
+    收官不得降级覆盖为 complete（此前这里无条件覆盖 → 面板归档后又复活的
+    补丁债之一）。保持幂等返回 True（收官对已归档 run 无事可做，不算失败）。
     """
     if not run_id:
         return False
@@ -202,6 +206,8 @@ def complete_run(run_id: str, registry_path: Optional[str] = None) -> bool:
                 break
         if found is None:
             return False
+        if current[found].get("status") == "archived":
+            return True
         rec = dict(current[found])
         rec["status"] = "complete"
         rec["updated_at"] = now_utc()

@@ -184,7 +184,7 @@ def check_dispatch_events(task_dir: str) -> List[Dict[str, Any]]:
 def check_human_answer_updates(task_dir: str) -> List[Dict[str, Any]]:
     """diff human_answer.json（mtime）→ 有新回复产出 task.update 事件。
 
-    动机（2026-09-02 杰哥实测）：runner 只在 --resume 启动时消费 human_answer.json，
+    动机（2026-09-02 Owner实测）：runner 只在 --resume 启动时消费 human_answer.json，
     运行中/退出后快照 needs_human 不变 → 长轮询无事件 → 面板「已解决」态永远刷不出来
     （人回复了石沉大海）。回复写入本身就该是一个事件：回复 → 面板立即可见已解决。
     幂等：mtime 未变不产生事件；首次观测（基线建立）不产生事件。

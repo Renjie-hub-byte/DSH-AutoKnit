@@ -15,7 +15,7 @@ from fw_runner.model import DriverOutcome
 from fw_runner.runner import run
 from fw_runner.drivers import InlineAgentDriver
 
-from helpers import build_task, module
+from helpers import build_task, module, unavailable_split_driver
 
 
 def _mk_drivers():
@@ -78,7 +78,8 @@ def test_exit_above_threshold_split_fail_human(tmp_path):
     """remaining 1500（>1000）→ 尝试 split；测试环境无 split driver → split_failed → 回人（不静默 done）。"""
     root = _build_root(tmp_path, 1500)
     e, a = _mk_drivers()
-    r = run(root, executor_driver=e, auditor_driver=a)
+    r = run(root, executor_driver=e, auditor_driver=a,
+                 split_driver=unavailable_split_driver())
     assert r.status == "needs_human"
     assert r.completed == []
     evs = _dispatch_events(root)

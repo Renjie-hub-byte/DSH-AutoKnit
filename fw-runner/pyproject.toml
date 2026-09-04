@@ -10,6 +10,13 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "PyYAML",
+    # llmjson 统一解析层依赖（2026-09-04 小澈复查 P0-3）：原先只在开发 venv 手装、
+    # 未声明 → pip 装的用户 `import llmjson` 直接 ImportError → split 校验静默降级
+    # 回旧手写路径（加固对真实用户 100% 不生效，且日志零提示）。
+    # pydantic 是硬依赖（llmjson 顶层 import）；json-repair 可缺省但属第二层主路径，
+    # 一并声明。pin 上界：json_repair 修复行为随版本漂移会改变解析结果（PM台账 #9）。
+    "pydantic>=2.0,<3",
+    "json-repair>=0.30,<1",
     # monorepo 内兄弟包，以路径依赖方式随 fw-runner 一起安装（packaging-p0：消灭 sys.path hack）
     "fw-protocol @ {root:uri}/../fw-protocol",
     "fw-scaffold @ {root:uri}/../fw-scaffold",

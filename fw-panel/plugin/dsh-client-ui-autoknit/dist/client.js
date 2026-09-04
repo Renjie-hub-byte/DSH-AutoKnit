@@ -1182,6 +1182,95 @@ function isSplitDispatch(rec) {
  * @param {object} dispatchByModule timeline records indexed by module_id
  * @returns {object} normalized module chain
  */
+/**
+ * 从 timeline（dispatch.jsonl 原始行）推导模块的 needs_human 历史事实：
+ * 哪些模块「曾经」进入过 needs_human（was）、进入时间（pendingSince）、
+ * 以及此后被流程解决的时间（processResolvedAt，最后一个 module.done）。
+ *
+ * 事件序列语义：module.needs_human → 进入 pending；module.human_rerun →
+ * 回到执行（pending 解除，但 was 记忆保留）；module.done → 曾 pending 的
+ * 模块记一次流程解决时间。纯函数，seq 升序遍历，未知事件忽略。
+ * @param {Array|object} timeline raw timeline payload
+ * @returns {{was:Object<string,boolean>, pendingSince:Object<string,string>, processResolvedAt:Object<string,string>}}
+ */
+function needsHumanFactsFromTimeline(timeline) {
+  var items = Array.isArray(timeline) ? timeline
+    : (timeline && Array.isArray(timeline.events) ? timeline.events : []);
+  var ordered = items.slice().sort(function (a, b) {
+    return (a && a.seq != null ? Number(a.seq) : 0) - (b && b.seq != null ? Number(b.seq) : 0);
+  });
+  var was = {};
+  var pendingSince = {};
+  var processResolvedAt = {};
+  ordered.forEach(function (r) {
+    if (!r) return;
+    var ev = String(r.event || '');
+    var mid = r.module != null ? String(r.module) : '';
+    if (!mid) return;
+    var ts = r.ts != null ? r.ts : (r.started_at != null ? r.started_at : null);
+    if (ev === 'module.needs_human') {
+      was[mid] = true;
+      pendingSince[mid] = ts != null ? ts : (pendingSince[mid] || null);
+    } else if (ev === 'module.human_rerun') {
+      delete pendingSince[mid];
+    } else if (ev === 'module.done' && was[mid]) {
+      processResolvedAt[mid] = ts != null ? ts : (processResolvedAt[mid] || null);
+    }
+  });
+  return { was: was, pendingSince: pendingSince, processResolvedAt: processResolvedAt };
+}
+
+/**
+ * 推导一个模块的人机决策三态（needs_human 生命周期）。
+ *
+ * 权威源：快照 needs_human 数组（pending：还在等）+ human_answer.json（code
+ * 存在且非 '?'/空 = 人已回复）+ timeline 事实（曾 needs_human → 流程解决后
+ * 才有「已解决（流程）」历史卡，从未 needs_human 的模块不渲染任何卡）。
+ *
+ * @param {string} mid module id
+ * @param {object} ctx {needsHuman:string[], humanAnswers:{mid:{code,text,answered_at,reason}}, perModule:{mid:{reason}}}
+ * @param {object} facts needsHumanFactsFromTimeline 的产物
+ * @returns {null|{state:'pending'|'resolved', by:null|'human'|'process',
+ *   code:string, text:string, answeredAt:string|null, reason:string,
+ *   pendingSince:string|null, draftText:string}}
+ *   null = 该模块与人机决策无关，不渲染卡。
+ */
+function deriveHumanDecision(mid, ctx, facts) {
+  mid = mid != null ? String(mid) : '';
+  ctx = ctx || {};
+  facts = facts || {};
+  var answer = (ctx.humanAnswers && ctx.humanAnswers[mid]) || null;
+  var code = answer && answer.code != null ? String(answer.code) : '';
+  var answered = !!(code && code !== '?');
+  var pendingNow = (ctx.needsHuman || []).indexOf(mid) !== -1;
+  var per = (ctx.perModule && ctx.perModule[mid]) || {};
+  var reason = (per.reason != null && per.reason !== '') ? per.reason
+    : (answer && answer.reason != null ? answer.reason : '');
+  if (answered) {
+    return {
+      state: 'resolved', by: 'human', code: code,
+      text: answer.text != null ? String(answer.text) : '',
+      answeredAt: answer.answered_at != null ? answer.answered_at : null,
+      reason: reason, pendingSince: facts.pendingSince[mid] || null, draftText: ''
+    };
+  }
+  if (pendingNow) {
+    var draft = answer && answer.text != null ? String(answer.text) : '';
+    return {
+      state: 'pending', by: null, code: '', text: '', answeredAt: null,
+      reason: reason, pendingSince: facts.pendingSince[mid] || null, draftText: draft
+    };
+  }
+  if (facts.was[mid]) {
+    return {
+      state: 'resolved', by: 'process', code: '', text: '',
+      answeredAt: facts.processResolvedAt[mid] || null,
+      reason: reason, pendingSince: facts.pendingSince[mid] || null, draftText: ''
+    };
+  }
+  return null;
+}
+
 function buildModuleChain(m, dispatchByModule) {
   m = m || {};
   var id = m.id != null ? String(m.id) : '';
@@ -1214,7 +1303,8 @@ function buildModuleChain(m, dispatchByModule) {
     started_at: m.started_at != null ? m.started_at : null,
     ended_at: m.ended_at != null ? m.ended_at : null,
     rounds: rounds,
-    fork: fork
+    fork: fork,
+    humanDecision: null
   };
 }
 
@@ -1433,6 +1523,25 @@ function buildPipelineChain(tree, timeline, usage) {
   }
   attachUsageTotals(root);
   chains.forEach(attachUsageTotals);
+
+  // 人机决策三态（needs_human 生命周期）attach：权威源 = 快照 needs_human 数组
+  // + human_answer.json（桥 tree.human_answers）；「曾 needs_human」由 timeline
+  // 事件序列推导（module.needs_human 出现过即记，供 resolved-by-process 历史卡）。
+  var humanCtx = {
+    needsHuman: Array.isArray(tree.needs_human) ? tree.needs_human.map(String) : [],
+    humanAnswers: (tree.human_answers && typeof tree.human_answers === 'object') ? tree.human_answers : {},
+    perModule: (tree.per_module && typeof tree.per_module === 'object') ? tree.per_module : {}
+  };
+  var humanTimeline = needsHumanFactsFromTimeline(timeline);
+  function attachHumanDecision(chain) {
+    if (!chain) return;
+    chain.humanDecision = deriveHumanDecision(chain.id, humanCtx, humanTimeline);
+    if (chain.fork && Array.isArray(chain.fork.children)) {
+      chain.fork.children.forEach(attachHumanDecision);
+    }
+  }
+  attachHumanDecision(root);
+  chains.forEach(attachHumanDecision);
 
   return {
     run_id: (tree.run && (tree.run.run_id || tree.run.id)) || tree.run_id || tree.runId || '',
@@ -1658,6 +1767,8 @@ module.exports = {
   normalizeRoundVerdict: normalizeRoundVerdict,
   buildModuleChain: buildModuleChain,
   buildPipelineChain: buildPipelineChain,
+  needsHumanFactsFromTimeline: needsHumanFactsFromTimeline,
+  deriveHumanDecision: deriveHumanDecision,
   buildPlannerSummary: buildPlannerSummary,
   ROLE_KINDS: ROLE_KINDS,
   roundKind: roundKind,
@@ -1828,6 +1939,18 @@ var MESSAGES = {
     'status.done': '完成',
     'status.pending': '待执行',
     'status.running': '进行中',
+    'decision.pendingTitle': '待人工决策',
+    'decision.reason': '打回原因',
+    'decision.since': '发生时间',
+    'decision.options': 'A=放弃该模块 · B=改方案 · C=暂停任务 · D=自定义（也可直接输入文本回复）',
+    'decision.resolvedTitle': '已解决',
+    'decision.resolver': '解决者',
+    'decision.by.human': '人',
+    'decision.by.process': '流程',
+    'decision.answerAt': '解决时间',
+    'decision.result': '结果',
+    'decision.draft': '已有草稿回复',
+    'decision.resolvedByProcess': '模块已由框架流程自行解决（auditor 通过 / 正常完成）',
     'status.needs_human': '待人工',
     'status.block': '阻塞',
     'module.token': 'token',
@@ -1934,6 +2057,18 @@ var MESSAGES = {
     'status.done': 'Done',
     'status.pending': 'Pending',
     'status.running': 'Running',
+    'decision.pendingTitle': 'Human decision needed',
+    'decision.reason': 'Reason',
+    'decision.since': 'Occurred at',
+    'decision.options': 'A=abandon module · B=change plan · C=pause run · D=custom (or reply with free text)',
+    'decision.resolvedTitle': 'Resolved',
+    'decision.resolver': 'Resolved by',
+    'decision.by.human': 'human',
+    'decision.by.process': 'process',
+    'decision.answerAt': 'Resolved at',
+    'decision.result': 'Result',
+    'decision.draft': 'Draft reply present',
+    'decision.resolvedByProcess': 'Module was resolved by the framework process (auditor pass / completed)',
     'status.needs_human': 'Needs human',
     'status.block': 'Blocked',
     'module.token': 'token',
@@ -2424,6 +2559,14 @@ module.exports = {
               if (poll.kind === 'full') {
                 setPipeline(logic.buildPipelineChain(raw, timeline, usage));
               }
+              // 决策弹窗自动关（铁律：窗口不允许悬挂）：模块已不在快照
+              // needs_human 清单（流程/人已解决）→ 关闭未提交的弹窗。
+              // submitting 中不强关（避免吞掉提交反馈）。
+              setReply(function (prev) {
+                if (!prev || prev.submitting) return prev;
+                var pendingList = Array.isArray(raw.needs_human) ? raw.needs_human.map(String) : [];
+                return pendingList.indexOf(String(prev.moduleId)) === -1 ? null : prev;
+              });
             });
           }).catch(function () { /* non-fatal: keep last good state */ });
         }
@@ -2607,14 +2750,21 @@ module.exports = {
       /** Validate + submit the decision via data-bridge.reply → POST /api/runs/{id}/reply. */
       function handleSubmitReply(moduleId) {
         if (!reply || reply.moduleId !== moduleId) return;
-        var v = logic.validateReplyCommand(reply.command, reply.instruction);
+        // bugfix(2026-09-02, 杰哥实测): 文本回复智能归类——默认 continue + 非空文本 → custom（D 语义）。
+        // 否则人的文字反馈被记成 B 且到不了 executor（BUG-124 排查 F2 遗留缺口）。
+        var effCommand = reply.command;
+        var effText = reply.instruction;
+        if (effText && String(effText).trim() && effCommand === 'continue') {
+          effCommand = 'custom';
+        }
+        var v = logic.validateReplyCommand(effCommand, effText);
         if (!v.ok) {
           var errKey = v.errors.instruction || v.errors.command;
-          setReply({ moduleId: moduleId, command: v.command, instruction: reply.instruction, error: t(errKey), submitting: false });
+          setReply({ moduleId: moduleId, command: v.command, instruction: effText, error: t(errKey), submitting: false });
           return;
         }
-        setReply({ moduleId: moduleId, command: v.command, instruction: reply.instruction, error: null, submitting: true });
-        client.reply(selected, { module_id: moduleId, command: v.command, instruction: reply.instruction })
+        setReply({ moduleId: moduleId, command: v.command, instruction: effText, error: null, submitting: true });
+        client.reply(selected, { module_id: moduleId, command: v.command, instruction: effText })
           .then(function () {
             // Success: close the dialog and refresh the run so the block's
             // status badge reflects the new stage (needs_human → running, etc.).
@@ -3014,9 +3164,7 @@ module.exports = {
               t('summary.rounds', { n: summary.rounds }))
           )
         : null;
-      var replyEl = (chain.status === 'needs_human')
-        ? renderReplyUi(React, chain, t, ui)
-        : null;
+      var replyEl = renderHumanDecisionUi(React, chain, t, ui);
       var roundsEl = renderRoundCards(React, chain.rounds, t, isActive);
       var forkEl = chain.fork
         ? renderFork(React, chain.fork, activeId, t, ui, detailUi, timeline, forkUi)
@@ -3128,6 +3276,88 @@ module.exports = {
       var children = fork && Array.isArray(fork.children) ? fork.children : [];
       var first = children[0];
       return (first && first.id != null) ? String(first.id) : '';
+    }
+
+    /**
+     * Needs_human 三态生命周期卡（决策卡需求 A+B）：
+     * - pending：完整问询内容（模块/打回原因全文/发生时间/A-D 选项含义/草稿）
+     *   + 原有决策交互（触发按钮或弹开的 dialog）；
+     * - resolved：已解决样式（解决者=人|流程 + 解决时间 + 结果摘要），不再有
+     *   待处理交互；
+     * - 关闭：数据侧 done 即移出快照 needs_human 清单 → humanDecision 为
+     *   resolved 或 null，待处理卡自然消失（事件驱动刷新驱动，无需手动）。
+     * humanDecision 缺失（旧桥/缺字段）时保底维持旧行为（status 驱动）。
+     */
+    function renderHumanDecisionUi(React, chain, t, ui) {
+      var hd = chain && chain.humanDecision;
+      if (!hd) {
+        return (chain && chain.status === 'needs_human')
+          ? renderReplyUi(React, chain, t, ui)
+          : null;
+      }
+      if (hd.state === 'resolved') {
+        return renderDecisionResolved(React, chain, hd, t);
+      }
+      return renderDecisionPending(React, chain, hd, t, ui);
+    }
+
+    /** 待处理卡：问询内容 5 项 + 决策交互。 */
+    function renderDecisionPending(React, chain, hd, t, ui) {
+      var sinceLbl = hd.pendingSince != null ? String(hd.pendingSince) : '—';
+      var cells = [
+        { key: 'reason', lbl: t('decision.reason'), val: hd.reason || t('time.none') },
+        { key: 'since', lbl: t('decision.since'), val: sinceLbl }
+      ];
+      if (hd.draftText) {
+        cells.push({ key: 'draft', lbl: t('decision.draft'), val: hd.draftText });
+      }
+      var infoRows = cells.map(function (c) {
+        return React.createElement('div', { key: c.key, className: 'ak-decision-row', 'data-ak-decision-row': c.key },
+          React.createElement('span', { className: 'ak-decision-lbl' }, c.lbl),
+          React.createElement('span', { className: 'ak-decision-val' }, c.val));
+      });
+      return React.createElement('div', {
+        className: 'ak-decision ak-decision-pending',
+        'data-ak-decision': '1',
+        'data-ak-decision-state': 'pending',
+        'data-ak-decision-module': chain.id
+      },
+        React.createElement('div', { className: 'ak-decision-head' },
+          React.createElement('span', { className: 'ak-decision-title' }, t('decision.pendingTitle')),
+          React.createElement('span', { className: 'ak-decision-module' }, chain.id + (chain.name && chain.name !== chain.id ? ' · ' + chain.name : ''))),
+        infoRows.length ? React.createElement('div', { className: 'ak-decision-rows', 'data-ak-decision-rows': '1' }, infoRows) : null,
+        React.createElement('div', { className: 'ak-decision-options', 'data-ak-decision-options': '1' }, t('decision.options')),
+        renderReplyUi(React, chain, t, ui));
+    }
+
+    /** 已解决卡：解决者（人|流程）+ 解决时间 + 结果摘要；不再有待处理交互。 */
+    function renderDecisionResolved(React, chain, hd, t) {
+      var byLbl = t(hd.by === 'human' ? 'decision.by.human' : 'decision.by.process');
+      var whenLbl = hd.answeredAt != null ? String(hd.answeredAt) : '—';
+      var summary = hd.by === 'human'
+        ? ((hd.code ? '[' + hd.code + '] ' : '') + (hd.text || ''))
+        : t('decision.resolvedByProcess');
+      var rows = [
+        { key: 'by', lbl: t('decision.resolver'), val: byLbl },
+        { key: 'at', lbl: t('decision.answerAt'), val: whenLbl }
+      ];
+      if (summary) rows.push({ key: 'result', lbl: t('decision.result'), val: summary });
+      return React.createElement('div', {
+        className: 'ak-decision ak-decision-resolved',
+        'data-ak-decision': '1',
+        'data-ak-decision-state': 'resolved',
+        'data-ak-decision-by': hd.by,
+        'data-ak-decision-module': chain.id
+      },
+        React.createElement('div', { className: 'ak-decision-head' },
+          React.createElement('span', { className: 'ak-decision-title' }, t('decision.resolvedTitle')),
+          React.createElement('span', { className: 'ak-decision-module' }, chain.id)),
+        React.createElement('div', { className: 'ak-decision-rows', 'data-ak-decision-rows': '1' },
+          rows.map(function (c) {
+            return React.createElement('div', { key: c.key, className: 'ak-decision-row', 'data-ak-decision-row': c.key },
+              React.createElement('span', { className: 'ak-decision-lbl' }, c.lbl),
+              React.createElement('span', { className: 'ak-decision-val' }, c.val));
+          })));
     }
 
     /** Needs_human block: show a trigger button, or the dialog when open. */

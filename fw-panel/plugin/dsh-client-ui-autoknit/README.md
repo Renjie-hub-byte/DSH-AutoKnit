@@ -91,7 +91,7 @@ dsh-client-ui-autoknit/
 6. **数据桥地址**：默认 `/api`（与 m01 fw-data-bridge 数据桥同源）；可在
    `window.__DSH__.config.autoknit = { baseURL, locale }` 配置。
 
-> 边界：面板只做数据读 + 文件读写，不调 LLM；视觉验收需真机浏览器（交杰哥真人看）。
+> 边界：面板只做数据读 + 文件读写，不调 LLM；视觉验收需真机浏览器（交Owner真人看）。
 
 ## 自测命令
 

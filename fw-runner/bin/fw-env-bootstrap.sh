@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fw-env-bootstrap.sh —— 任务启动环境预置（杰哥 2026-08-25 拍板：角色"能用就用"，
+# fw-env-bootstrap.sh —— 任务启动环境预置（Owner 2026-08-25 拍板：角色"能用就用"，
 #                         需要的能力在任务开始时配好，不靠角色自己脑补/现场装）
 # 用法: fw-env-bootstrap.sh <任务目录>
 # 产出（幂等，可重复执行）:
@@ -76,7 +76,8 @@ TASK_PKGS="$(echo "$TASK_PKGS" | xargs)"   # 去首尾空白
 if [ -n "$TASK_PKGS" ]; then
   echo "[fw-env] 聚合 task.yaml 声明的 python_packages: $TASK_PKGS"
   # 后台装 + 120s 超时兜底（2026-09-01）：网络慢/断网不能无限挂起 run 启动。
-  "$VENV/bin/pip" install -q --disable-pip-version-check $TASK_PKGS >/dev/null 2>&1 &
+  # set -u 防御（2026-09-02 v4 教训）：planner 写非规范包名（yaml）触发失败分支时 TASK_PKGS 引用 unbound
+  "$VENV/bin/pip" install -q --disable-pip-version-check ${TASK_PKGS:-} >/dev/null 2>&1 &
   PIP_PID=$!
   _i=0
   while kill -0 $PIP_PID 2>/dev/null && [ $_i -lt 120 ]; do sleep 1; _i=$((_i+1)); done
@@ -86,7 +87,7 @@ if [ -n "$TASK_PKGS" ]; then
   elif wait $PIP_PID 2>/dev/null; then
     echo "[fw-env] ✓ 任务依赖已装"
   else
-    echo "[fw-env] ⚠️ 任务依赖安装失败（可手动: $VENV/bin/pip install $TASK_PKGS）；executor 将按「工具红线」写「已知风险」，不硬装"
+    echo "[fw-env] ⚠️ 任务依赖安装失败（可手动: $VENV/bin/pip install ${TASK_PKGS:-}）；executor 将按「工具红线」写「已知风险」，不硬装"
   fi
 fi
 

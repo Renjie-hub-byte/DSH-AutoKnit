@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: fw-scaffold
+Version: 1.0.0
+Summary: dsh 任务编排层 v1.0 需求 2：读合法 task.yaml 一键生成 v2 目录树（原子写 + expected 版本防护）
+Requires-Python: >=3.11
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: jsonschema>=4.0

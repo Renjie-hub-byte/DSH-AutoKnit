@@ -2,7 +2,7 @@
 # 预期：fw-protocol 报 dep_cycle 错误并指出环路径（exit 1）
 task:
   name: 示例-含环任务
-  owner: 小理
+  owner: PM
 budget:
   max_tokens: 100000
 modules:

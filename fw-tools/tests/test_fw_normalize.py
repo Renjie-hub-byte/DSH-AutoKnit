@@ -104,12 +104,12 @@ def test_content_only_full_completion():
             {"name": "展示层", "objective": "展示", "acceptance": ["能看"],
              "dependencies": ["数据桥"]},
         ]},
-        owner="杰哥", source_prd="PRD.md", created="2026-08-25")
+        owner="Owner", source_prd="PRD.md", created="2026-08-25")
     m0, m1 = d["modules"]
     assert (m0["id"], m1["id"]) == ("m01", "m02")
     assert (m0["layer"], m1["layer"]) == (1, 2)          # 拓扑推导
     assert m1["dependencies"] == ["m01"]                  # 名字→id 解析
-    assert d["task"]["owner"] == "杰哥" and d["task"]["created"] == "2026-08-25"
+    assert d["task"]["owner"] == "Owner" and d["task"]["created"] == "2026-08-25"
     assert d["budget"]["max_tokens"] == 200000            # 默认注入
     assert d["runtime"]["executor_max_rounds"] == 5
     assert m0["boundaries"] == [] and m0["round_estimate"] == 2

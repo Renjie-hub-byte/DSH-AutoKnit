@@ -890,3 +890,18 @@
     opacity: 1;
   }
 }
+
+/* ---- 决策卡三态生命周期（pending / resolved） ---- */
+.ak-decision { border-radius: 8px; padding: 8px 10px; margin: 6px 0; font-size: 12px; }
+.ak-decision-pending { border: 1px solid #d97706; background: rgba(217,119,6,.08); }
+.ak-decision-resolved { border: 1px solid #16a34a; background: rgba(22,163,74,.07); opacity: .85; }
+.ak-decision-head { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.ak-decision-title { font-weight: 700; }
+.ak-decision-pending .ak-decision-title { color: #b45309; }
+.ak-decision-resolved .ak-decision-title { color: #15803d; }
+.ak-decision-module { color: var(--ak-text-dim, #888); font-size: 11px; }
+.ak-decision-rows { display: flex; flex-direction: column; gap: 2px; }
+.ak-decision-row { display: flex; gap: 6px; }
+.ak-decision-lbl { color: var(--ak-text-dim, #888); flex: 0 0 auto; }
+.ak-decision-val { word-break: break-all; white-space: pre-wrap; }
+.ak-decision-options { margin-top: 4px; color: var(--ak-text-dim, #888); font-size: 11px; }

@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: fw-api
+Version: 0.1.0
+Summary: AutoKnit 对外接口层：dsh.* 接口（task.list/detail/update/reply + session/usage），任何前端/cockpit 通过接口消费
+Requires-Python: >=3.9
+Requires-Dist: pyyaml>=6.0

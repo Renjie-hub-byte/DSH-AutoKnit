@@ -229,6 +229,36 @@ try:
 except Exception:
     pass
 
+# M2（BUG-20260904，7b）：断点续做。needs_human（B/D）重入或 REVIEW 已有进展时，
+# 注入已完成清单引导 executor 从待办续做而非从块头重做——m05 实测三次重入
+# ~26 万 token 纯浪费的解药。清单来源：REVIEW「已做」小节（动态事实源）+ src/
+# 已存在产物扫描。只做清单级引导，不做产物级 diff 续跑（对齐 PRD 边界）。
+if _code in ("B", "D") or review_summary:
+    _done_items = []
+    try:
+        _rev = open("REVIEW.md", encoding="utf-8").read()
+        _m2 = re.search(r"##\s*(已做|done)[^\n]*\n(.*?)(?=\n##|\Z)", _rev, re.S | re.I)
+        if _m2:
+            _done_items = [l.strip().lstrip("- ").strip() for l in _m2.group(2).splitlines() if l.strip()][:10]
+    except Exception:
+        pass
+    _arts = []
+    for _root, _dirs, _fs in os.walk("src"):
+        _dirs[:] = [d for d in _dirs if d != "__pycache__"]
+        for _f in _fs:
+            if _f.endswith((".py", ".md", ".json", ".yaml", ".toml")):
+                _arts.append(os.path.join(_root, _f).replace(os.sep, "/"))
+    _arts = sorted(_arts)[:15]
+    _tests = [a for a in _arts if "/test" in a or a.split("/")[-1].startswith("test")]
+    print("\n【断点信息】本轮为重入（人审后续做）——勿从块头重做：")
+    if _done_items:
+        print(f"- 已完成（REVIEW 已做）: {'；'.join(_done_items[:6])}")
+    if _arts:
+        print(f"- 已存在产物（直接增量修改，不要重写）: {'；'.join(_arts[:8])}")
+    if _tests:
+        print(f"- 测试文件（先跑确认基线，再补剩余）: {'；'.join(_tests[:6])}")
+    print("- 从 REVIEW 待办/下轮计划继续；未列出的能力视为未实现，不要假设已完成。")
+
 print(f"\n【总 · 任务全貌】")
 print(f"- 总目标: {goal}")
 if wnh:

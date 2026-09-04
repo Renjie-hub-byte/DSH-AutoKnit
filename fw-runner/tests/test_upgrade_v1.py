@@ -163,3 +163,70 @@ def test_should_merge_back_custom_threshold():
     state.ensure("m01").partial_count = 3
     assert should_merge_back(state, "m01", RunConfig(split_merge_after_fails=4)) is False
     assert should_merge_back(state, "m01", RunConfig(split_merge_after_fails=3)) is True
+
+
+# ---------- 2026-09-04 Owner拍板：计数只管"人卡住"，不管"活没干完" ----------
+
+def test_partial_same_cause_twice_escalates_to_human():
+    """Owner规则本体：同一执行者、同一件事、连续两次不成 → 上升给人。"""
+    state = RunState()
+    cfg = RunConfig(max_partial_rounds=2)
+    items = ["还差登录接口"]                      # 同一清单 = 同因
+    assert route_partial(state, "m01", cfg, 3, 4, items) == RETRY
+    assert route_partial(state, "m01", cfg, 3, 4, items) == HUMAN
+
+
+def test_partial_with_progress_does_not_escalate():
+    """有进展（剩余清单在变）就一直给机会；同因连续第 2 次才回人。
+
+    旧实现数的是累计 partial 次数（且不因换人清零），第 2 次无论有没有进展都回人。
+    """
+    state = RunState()
+    cfg = RunConfig(max_partial_rounds=2, retry_remaining_threshold=5)
+    assert route_partial(state, "m01", cfg, 1, 8, ["a", "b"]) == RETRY   # streak=1
+    assert route_partial(state, "m01", cfg, 3, 8, ["b"]) == RETRY        # 清单变了=有进展 streak=1
+    assert route_partial(state, "m01", cfg, 4, 8, ["c"]) == RETRY        # 换了下件事 streak=1
+    assert route_partial(state, "m01", cfg, 4, 8, ["c"]) == HUMAN        # 同一件事第 2 次 → 回人
+
+
+def test_big_remaining_splits_even_after_prior_partial():
+    """★ Owner担心的误伤：先因"剩得少"续做一轮，第二轮发现其实剩很多
+    → 必须 SPLIT（块太大不是人不行）。旧实现在这里直接回人，递归路径被截胡。
+    """
+    state = RunState()
+    cfg = RunConfig(max_partial_rounds=2, retry_remaining_threshold=2)
+    assert route_partial(state, "m01", cfg, 6, 10, ["x", "y"]) == RETRY      # 剩 2 → 续做
+    got = route_partial(state, "m01", cfg, 3, 10,
+                        ["a", "b", "c", "d", "e"])                            # 剩 5 > 阈值
+    assert got == SPLIT, f"第二次 partial 且剩余更多却被判 {got}（应为 SPLIT）"
+
+
+def test_split_depth_cap_still_bounds_runaway():
+    """放开次数截胡后，失控递归靠"每模块各自额度"兜住：额度用尽 → HUMAN。"""
+    state = RunState()
+    cfg = RunConfig(split_max_depth=1, retry_remaining_threshold=2)
+    astate = state.ensure("m01")
+    astate.split_depth = 1                                # 本模块额度已用完
+    assert route_partial(state, "m01", cfg, 0, 10, ["a", "b", "c"]) == HUMAN
+
+
+def test_partial_streak_counts_same_cause_not_cumulative():
+    """no_progress_streak 与 partial_count 分开：前者判回人（同因连续），后者判合并回父（累计）。"""
+    state = RunState()
+    cfg = RunConfig(max_partial_rounds=3, retry_remaining_threshold=5)
+    route_partial(state, "m01", cfg, 3, 4, ["x"])
+    route_partial(state, "m01", cfg, 3, 4, ["x"])
+    a = state.ensure("m01")
+    assert a.partial_count == 2 and a.no_progress_streak == 2
+
+
+def test_partial_count_still_accumulates_for_merge_back():
+    """partial_count 语义不变：should_merge_back 仍按累计次数判（不能被新计数口径带跑）。"""
+    from fw_runner.upgrade import should_merge_back
+    state = RunState()
+    cfg = RunConfig(split_merge_after_fails=3, retry_remaining_threshold=0,
+                    split_max_depth=9)
+    for _ in range(3):
+        route_partial(state, "m01", cfg, 0, 5, ["a", "b"])   # 每次剩余多 → SPLIT，但仍累计
+    assert state.ensure("m01").partial_count == 3
+    assert should_merge_back(state, "m01", cfg) is True

@@ -174,6 +174,14 @@
               if (poll.kind === 'full') {
                 setPipeline(logic.buildPipelineChain(raw, timeline, usage));
               }
+              // 决策弹窗自动关（铁律：窗口不允许悬挂）：模块已不在快照
+              // needs_human 清单（流程/人已解决）→ 关闭未提交的弹窗。
+              // submitting 中不强关（避免吞掉提交反馈）。
+              setReply(function (prev) {
+                if (!prev || prev.submitting) return prev;
+                var pendingList = Array.isArray(raw.needs_human) ? raw.needs_human.map(String) : [];
+                return pendingList.indexOf(String(prev.moduleId)) === -1 ? null : prev;
+              });
             });
           }).catch(function () { /* non-fatal: keep last good state */ });
         }
@@ -357,14 +365,21 @@
       /** Validate + submit the decision via data-bridge.reply → POST /api/runs/{id}/reply. */
       function handleSubmitReply(moduleId) {
         if (!reply || reply.moduleId !== moduleId) return;
-        var v = logic.validateReplyCommand(reply.command, reply.instruction);
+        // bugfix(2026-09-02, 杰哥实测): 文本回复智能归类——默认 continue + 非空文本 → custom（D 语义）。
+        // 否则人的文字反馈被记成 B 且到不了 executor（BUG-124 排查 F2 遗留缺口）。
+        var effCommand = reply.command;
+        var effText = reply.instruction;
+        if (effText && String(effText).trim() && effCommand === 'continue') {
+          effCommand = 'custom';
+        }
+        var v = logic.validateReplyCommand(effCommand, effText);
         if (!v.ok) {
           var errKey = v.errors.instruction || v.errors.command;
-          setReply({ moduleId: moduleId, command: v.command, instruction: reply.instruction, error: t(errKey), submitting: false });
+          setReply({ moduleId: moduleId, command: v.command, instruction: effText, error: t(errKey), submitting: false });
           return;
         }
-        setReply({ moduleId: moduleId, command: v.command, instruction: reply.instruction, error: null, submitting: true });
-        client.reply(selected, { module_id: moduleId, command: v.command, instruction: reply.instruction })
+        setReply({ moduleId: moduleId, command: v.command, instruction: effText, error: null, submitting: true });
+        client.reply(selected, { module_id: moduleId, command: v.command, instruction: effText })
           .then(function () {
             // Success: close the dialog and refresh the run so the block's
             // status badge reflects the new stage (needs_human → running, etc.).
@@ -764,9 +779,7 @@
               t('summary.rounds', { n: summary.rounds }))
           )
         : null;
-      var replyEl = (chain.status === 'needs_human')
-        ? renderReplyUi(React, chain, t, ui)
-        : null;
+      var replyEl = renderHumanDecisionUi(React, chain, t, ui);
       var roundsEl = renderRoundCards(React, chain.rounds, t, isActive);
       var forkEl = chain.fork
         ? renderFork(React, chain.fork, activeId, t, ui, detailUi, timeline, forkUi)
@@ -878,6 +891,88 @@
       var children = fork && Array.isArray(fork.children) ? fork.children : [];
       var first = children[0];
       return (first && first.id != null) ? String(first.id) : '';
+    }
+
+    /**
+     * Needs_human 三态生命周期卡（决策卡需求 A+B）：
+     * - pending：完整问询内容（模块/打回原因全文/发生时间/A-D 选项含义/草稿）
+     *   + 原有决策交互（触发按钮或弹开的 dialog）；
+     * - resolved：已解决样式（解决者=人|流程 + 解决时间 + 结果摘要），不再有
+     *   待处理交互；
+     * - 关闭：数据侧 done 即移出快照 needs_human 清单 → humanDecision 为
+     *   resolved 或 null，待处理卡自然消失（事件驱动刷新驱动，无需手动）。
+     * humanDecision 缺失（旧桥/缺字段）时保底维持旧行为（status 驱动）。
+     */
+    function renderHumanDecisionUi(React, chain, t, ui) {
+      var hd = chain && chain.humanDecision;
+      if (!hd) {
+        return (chain && chain.status === 'needs_human')
+          ? renderReplyUi(React, chain, t, ui)
+          : null;
+      }
+      if (hd.state === 'resolved') {
+        return renderDecisionResolved(React, chain, hd, t);
+      }
+      return renderDecisionPending(React, chain, hd, t, ui);
+    }
+
+    /** 待处理卡：问询内容 5 项 + 决策交互。 */
+    function renderDecisionPending(React, chain, hd, t, ui) {
+      var sinceLbl = hd.pendingSince != null ? String(hd.pendingSince) : '—';
+      var cells = [
+        { key: 'reason', lbl: t('decision.reason'), val: hd.reason || t('time.none') },
+        { key: 'since', lbl: t('decision.since'), val: sinceLbl }
+      ];
+      if (hd.draftText) {
+        cells.push({ key: 'draft', lbl: t('decision.draft'), val: hd.draftText });
+      }
+      var infoRows = cells.map(function (c) {
+        return React.createElement('div', { key: c.key, className: 'ak-decision-row', 'data-ak-decision-row': c.key },
+          React.createElement('span', { className: 'ak-decision-lbl' }, c.lbl),
+          React.createElement('span', { className: 'ak-decision-val' }, c.val));
+      });
+      return React.createElement('div', {
+        className: 'ak-decision ak-decision-pending',
+        'data-ak-decision': '1',
+        'data-ak-decision-state': 'pending',
+        'data-ak-decision-module': chain.id
+      },
+        React.createElement('div', { className: 'ak-decision-head' },
+          React.createElement('span', { className: 'ak-decision-title' }, t('decision.pendingTitle')),
+          React.createElement('span', { className: 'ak-decision-module' }, chain.id + (chain.name && chain.name !== chain.id ? ' · ' + chain.name : ''))),
+        infoRows.length ? React.createElement('div', { className: 'ak-decision-rows', 'data-ak-decision-rows': '1' }, infoRows) : null,
+        React.createElement('div', { className: 'ak-decision-options', 'data-ak-decision-options': '1' }, t('decision.options')),
+        renderReplyUi(React, chain, t, ui));
+    }
+
+    /** 已解决卡：解决者（人|流程）+ 解决时间 + 结果摘要；不再有待处理交互。 */
+    function renderDecisionResolved(React, chain, hd, t) {
+      var byLbl = t(hd.by === 'human' ? 'decision.by.human' : 'decision.by.process');
+      var whenLbl = hd.answeredAt != null ? String(hd.answeredAt) : '—';
+      var summary = hd.by === 'human'
+        ? ((hd.code ? '[' + hd.code + '] ' : '') + (hd.text || ''))
+        : t('decision.resolvedByProcess');
+      var rows = [
+        { key: 'by', lbl: t('decision.resolver'), val: byLbl },
+        { key: 'at', lbl: t('decision.answerAt'), val: whenLbl }
+      ];
+      if (summary) rows.push({ key: 'result', lbl: t('decision.result'), val: summary });
+      return React.createElement('div', {
+        className: 'ak-decision ak-decision-resolved',
+        'data-ak-decision': '1',
+        'data-ak-decision-state': 'resolved',
+        'data-ak-decision-by': hd.by,
+        'data-ak-decision-module': chain.id
+      },
+        React.createElement('div', { className: 'ak-decision-head' },
+          React.createElement('span', { className: 'ak-decision-title' }, t('decision.resolvedTitle')),
+          React.createElement('span', { className: 'ak-decision-module' }, chain.id)),
+        React.createElement('div', { className: 'ak-decision-rows', 'data-ak-decision-rows': '1' },
+          rows.map(function (c) {
+            return React.createElement('div', { key: c.key, className: 'ak-decision-row', 'data-ak-decision-row': c.key },
+              React.createElement('span', { className: 'ak-decision-lbl' }, c.lbl),
+              React.createElement('span', { className: 'ak-decision-val' }, c.val));
+          })));
     }
 
     /** Needs_human block: show a trigger button, or the dialog when open. */

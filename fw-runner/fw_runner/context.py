@@ -82,9 +82,9 @@ def _resolve_runtime_config(effective: Mapping[str, Any],
         cfg.retry_before_switch = cfg.retry_before_switch + 1
     for key in ("max_parallel", "executor_max_rounds", "retry_before_switch",
                 "max_executor_switches", "end_gate", "heartbeat_n_rounds",
-                "checkpoint_every", "mode", "split_max_depth",
+                "checkpoint_every", "mode", "split_max_depth", "split_max_total",
                 "split_exit_threshold", "retry_remaining_threshold",
-                "audit_require_evidence", "enable_split"):
+                "split_protocol_retries", "audit_require_evidence", "enable_split"):
         if key in overrides and overrides[key] is not None:
             val = overrides[key]
             if key == "end_gate":

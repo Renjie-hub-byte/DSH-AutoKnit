@@ -83,6 +83,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="partial 剩余交付物 ≤ N 项 → 原 executor 续做（默认 2）")
     rp.add_argument("--split-max-depth", type=int, default=None,
                     help="最大递归拆分深度（防无限递归，默认 2）")
+    rp.add_argument("--split-max-total", type=int, default=None,
+                    help="任务级模块总数上限（planner + split 全部），防失控递归，默认 30")
+    rp.add_argument("--split-protocol-retries", type=int, default=None,
+                    help="拆解协议故障回喂 LLM 的重试次数（默认 2，总尝试 3 次）；0=不回喂直接失败")
     rp.add_argument("--no-split", action="store_true",
                     help="禁用自动拆分（enable_split=False），超量直接回人")
     rp.add_argument("--enable-split", action="store_true", default=None,
@@ -105,7 +109,8 @@ def _collect_overrides(args) -> dict:
     for key in ("max_parallel", "executor_max_rounds", "retry_before_switch",
                 "max_executor_switches", "heartbeat_n_rounds", "checkpoint_every", "end_gate",
                 "split_exit_threshold", "retry_remaining_threshold", "split_max_depth",
-                "audit_require_evidence"):
+                "split_max_total",
+                "split_protocol_retries", "audit_require_evidence"):
         val = getattr(args, key, None)
         if val is not None:
             ov[key] = val

@@ -16,6 +16,7 @@ from fw_runner.model import DriverOutcome
 from fw_runner.progress import write_progress
 from fw_runner.review import append_done, read_review, upsert_section_file
 from fw_runner.runner import run
+from helpers import unavailable_split_driver
 
 
 def _module_dir(single_root):
@@ -46,7 +47,8 @@ def test_switch_carries_previous_progress(single_root):
                              reason="验收不过（演示常 block）", blocker="演示 blocker")
 
     result = run(single_root, executor_driver=InlineAgentDriver(executor),
-                 auditor_driver=InlineAgentDriver(auditor))
+                 auditor_driver=InlineAgentDriver(auditor),
+                 split_driver=unavailable_split_driver())
 
     assert result.status == "needs_human"
     mdir = _module_dir(single_root)
@@ -82,7 +84,8 @@ def test_human_return_has_progress_pointer(single_root):
                              confidence=0.6, reason="上游未交付，无法验收", blocker="上游 blocker")
 
     result = run(single_root, executor_driver=InlineAgentDriver(executor),
-                 auditor_driver=InlineAgentDriver(auditor))
+                 auditor_driver=InlineAgentDriver(auditor),
+                 split_driver=unavailable_split_driver())
 
     assert result.status == "needs_human"
     mdir = _module_dir(single_root)

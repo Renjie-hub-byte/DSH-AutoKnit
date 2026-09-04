@@ -10,7 +10,7 @@
 - planner 归根级会话（窗口内），模块会话/未来会话不串；
 - 进行中 run 回退注册表 started_at 作窗口起点。
 
-口径（2026-09-01 杰哥拍板）：会话 inputTokens 即非缓存输入；billable =
+口径（2026-09-01 Owner拍板）：会话 inputTokens 即非缓存输入；billable =
 input + output（缓存读单独上报不计费）；total_input = input + cache_read。
 """
 import json
@@ -499,7 +499,7 @@ def test_planner_session_in_parent_dir(monkeypatch, tmp_path):
         _entry(reg_ms + 30_000, 400, 150, 20),   # 结束早于 registry started_at（真实时序）
     ])
     # 干扰项：无关目录的根级会话（同一父目录下的其它工作）不算。
-    _write_session(sess_root, "--Users-songrenjie-somewhere-else--", "noise", [
+    _write_session(sess_root, "--Users-demo-somewhere-else--", "noise", [
         _entry(reg_ms + 40_000, 8888, 8888, 8888),
     ])
     index.refresh()

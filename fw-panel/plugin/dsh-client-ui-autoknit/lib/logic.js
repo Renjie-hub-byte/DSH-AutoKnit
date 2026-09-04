@@ -1172,6 +1172,95 @@ function isSplitDispatch(rec) {
  * @param {object} dispatchByModule timeline records indexed by module_id
  * @returns {object} normalized module chain
  */
+/**
+ * 从 timeline（dispatch.jsonl 原始行）推导模块的 needs_human 历史事实：
+ * 哪些模块「曾经」进入过 needs_human（was）、进入时间（pendingSince）、
+ * 以及此后被流程解决的时间（processResolvedAt，最后一个 module.done）。
+ *
+ * 事件序列语义：module.needs_human → 进入 pending；module.human_rerun →
+ * 回到执行（pending 解除，但 was 记忆保留）；module.done → 曾 pending 的
+ * 模块记一次流程解决时间。纯函数，seq 升序遍历，未知事件忽略。
+ * @param {Array|object} timeline raw timeline payload
+ * @returns {{was:Object<string,boolean>, pendingSince:Object<string,string>, processResolvedAt:Object<string,string>}}
+ */
+function needsHumanFactsFromTimeline(timeline) {
+  var items = Array.isArray(timeline) ? timeline
+    : (timeline && Array.isArray(timeline.events) ? timeline.events : []);
+  var ordered = items.slice().sort(function (a, b) {
+    return (a && a.seq != null ? Number(a.seq) : 0) - (b && b.seq != null ? Number(b.seq) : 0);
+  });
+  var was = {};
+  var pendingSince = {};
+  var processResolvedAt = {};
+  ordered.forEach(function (r) {
+    if (!r) return;
+    var ev = String(r.event || '');
+    var mid = r.module != null ? String(r.module) : '';
+    if (!mid) return;
+    var ts = r.ts != null ? r.ts : (r.started_at != null ? r.started_at : null);
+    if (ev === 'module.needs_human') {
+      was[mid] = true;
+      pendingSince[mid] = ts != null ? ts : (pendingSince[mid] || null);
+    } else if (ev === 'module.human_rerun') {
+      delete pendingSince[mid];
+    } else if (ev === 'module.done' && was[mid]) {
+      processResolvedAt[mid] = ts != null ? ts : (processResolvedAt[mid] || null);
+    }
+  });
+  return { was: was, pendingSince: pendingSince, processResolvedAt: processResolvedAt };
+}
+
+/**
+ * 推导一个模块的人机决策三态（needs_human 生命周期）。
+ *
+ * 权威源：快照 needs_human 数组（pending：还在等）+ human_answer.json（code
+ * 存在且非 '?'/空 = 人已回复）+ timeline 事实（曾 needs_human → 流程解决后
+ * 才有「已解决（流程）」历史卡，从未 needs_human 的模块不渲染任何卡）。
+ *
+ * @param {string} mid module id
+ * @param {object} ctx {needsHuman:string[], humanAnswers:{mid:{code,text,answered_at,reason}}, perModule:{mid:{reason}}}
+ * @param {object} facts needsHumanFactsFromTimeline 的产物
+ * @returns {null|{state:'pending'|'resolved', by:null|'human'|'process',
+ *   code:string, text:string, answeredAt:string|null, reason:string,
+ *   pendingSince:string|null, draftText:string}}
+ *   null = 该模块与人机决策无关，不渲染卡。
+ */
+function deriveHumanDecision(mid, ctx, facts) {
+  mid = mid != null ? String(mid) : '';
+  ctx = ctx || {};
+  facts = facts || {};
+  var answer = (ctx.humanAnswers && ctx.humanAnswers[mid]) || null;
+  var code = answer && answer.code != null ? String(answer.code) : '';
+  var answered = !!(code && code !== '?');
+  var pendingNow = (ctx.needsHuman || []).indexOf(mid) !== -1;
+  var per = (ctx.perModule && ctx.perModule[mid]) || {};
+  var reason = (per.reason != null && per.reason !== '') ? per.reason
+    : (answer && answer.reason != null ? answer.reason : '');
+  if (answered) {
+    return {
+      state: 'resolved', by: 'human', code: code,
+      text: answer.text != null ? String(answer.text) : '',
+      answeredAt: answer.answered_at != null ? answer.answered_at : null,
+      reason: reason, pendingSince: facts.pendingSince[mid] || null, draftText: ''
+    };
+  }
+  if (pendingNow) {
+    var draft = answer && answer.text != null ? String(answer.text) : '';
+    return {
+      state: 'pending', by: null, code: '', text: '', answeredAt: null,
+      reason: reason, pendingSince: facts.pendingSince[mid] || null, draftText: draft
+    };
+  }
+  if (facts.was[mid]) {
+    return {
+      state: 'resolved', by: 'process', code: '', text: '',
+      answeredAt: facts.processResolvedAt[mid] || null,
+      reason: reason, pendingSince: facts.pendingSince[mid] || null, draftText: ''
+    };
+  }
+  return null;
+}
+
 function buildModuleChain(m, dispatchByModule) {
   m = m || {};
   var id = m.id != null ? String(m.id) : '';
@@ -1204,7 +1293,8 @@ function buildModuleChain(m, dispatchByModule) {
     started_at: m.started_at != null ? m.started_at : null,
     ended_at: m.ended_at != null ? m.ended_at : null,
     rounds: rounds,
-    fork: fork
+    fork: fork,
+    humanDecision: null
   };
 }
 
@@ -1423,6 +1513,25 @@ function buildPipelineChain(tree, timeline, usage) {
   }
   attachUsageTotals(root);
   chains.forEach(attachUsageTotals);
+
+  // 人机决策三态（needs_human 生命周期）attach：权威源 = 快照 needs_human 数组
+  // + human_answer.json（桥 tree.human_answers）；「曾 needs_human」由 timeline
+  // 事件序列推导（module.needs_human 出现过即记，供 resolved-by-process 历史卡）。
+  var humanCtx = {
+    needsHuman: Array.isArray(tree.needs_human) ? tree.needs_human.map(String) : [],
+    humanAnswers: (tree.human_answers && typeof tree.human_answers === 'object') ? tree.human_answers : {},
+    perModule: (tree.per_module && typeof tree.per_module === 'object') ? tree.per_module : {}
+  };
+  var humanTimeline = needsHumanFactsFromTimeline(timeline);
+  function attachHumanDecision(chain) {
+    if (!chain) return;
+    chain.humanDecision = deriveHumanDecision(chain.id, humanCtx, humanTimeline);
+    if (chain.fork && Array.isArray(chain.fork.children)) {
+      chain.fork.children.forEach(attachHumanDecision);
+    }
+  }
+  attachHumanDecision(root);
+  chains.forEach(attachHumanDecision);
 
   return {
     run_id: (tree.run && (tree.run.run_id || tree.run.id)) || tree.run_id || tree.runId || '',
@@ -1648,6 +1757,8 @@ module.exports = {
   normalizeRoundVerdict: normalizeRoundVerdict,
   buildModuleChain: buildModuleChain,
   buildPipelineChain: buildPipelineChain,
+  needsHumanFactsFromTimeline: needsHumanFactsFromTimeline,
+  deriveHumanDecision: deriveHumanDecision,
   buildPlannerSummary: buildPlannerSummary,
   ROLE_KINDS: ROLE_KINDS,
   roundKind: roundKind,

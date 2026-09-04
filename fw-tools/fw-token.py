@@ -200,7 +200,9 @@ def main():
             rows.append((key, i, o, ca, len(cs)))
             tot["i"] += i; tot["o"] += o; tot["c"] += ca; tot["n"] += len(cs)
     if as_json:
-        # 机器可读：计费 = 输入+输出（缓存命中不计费，单独上报）
+        # 机器可读。口径统一（2026-09-01 Owner拍板，对齐 fwapi/dsh/usage.py）：
+        # 会话 inputTokens 即非缓存输入（pi-ai 层 input = prompt_tokens − cacheRead），
+        # 计费 billable = 输入 + 输出（非缓存）；缓存读单独上报，不计入计费。
         print(json.dumps({
             "input_tokens": tot["i"], "output_tokens": tot["o"],
             "cache_read_tokens": tot["c"], "calls": tot["n"],

@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: fw-protocol
+Version: 1.0.0
+Summary: 任务书协议与校验器：task.yaml JSON Schema + 依赖环/接口重复/验收冲突三查（dsh 任务编排层 v1.0）
+Requires-Python: >=3.11
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: jsonschema>=4.0

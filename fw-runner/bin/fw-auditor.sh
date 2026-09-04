@@ -461,6 +461,8 @@ reasons = ""
 passed = total = 0
 remaining = []
 used = "json"
+# m02 auditor 迁层②：判定解析留痕（layer/repaired/verdict/source）供 auditor.parse 事件消费
+parse_meta = {}
 # BUG-002a（2026-08-25）：证据等级（L1=命令实跑 L2=内容取证 L3=静态推演）与证据清单
 ev_level = ""
 ev_list = []
@@ -518,9 +520,29 @@ def _norm_counts(p, t, rem):
 
 
 # 1) 优先：json 文件（audit-result.json，含三态判定 + 计数）
+# M3（BUG-20260904，U4）：json.load 失败（尾逗号/截断/单引号）不再整份作废——
+# json_repair 修复兜底（层②），并写 tmp/audit_parse_meta.json 留痕（R3：静默降级=没有降级）。
+_parse_repaired = False
 if resfile and os.path.exists(resfile) and os.path.getsize(resfile) > 0:
     try:
         d = json.load(open(resfile, encoding="utf-8"))
+    except Exception:
+        d = None
+        try:
+            import json_repair as _jr
+            d = _jr.loads(open(resfile, encoding="utf-8").read())
+            _parse_repaired = isinstance(d, dict)
+        except Exception:
+            d = None
+    if isinstance(d, dict):
+        try:
+            # M3：修复留痕直接设 parse_meta（同一 python 作用域，流入尾部 auditor.parse
+            # 事件）；文本兜底段仅在 verdict 仍空时覆盖。
+            parse_meta = {"source": "file", "repaired": _parse_repaired, "role": "auditor",
+                          "layer": 2 if _parse_repaired else 1}
+        except Exception:
+            pass
+    if isinstance(d, dict):
         verdict = str(d.get("verdict") or "")
         rootv = str(d.get("root") or "")
         try:
@@ -554,8 +576,6 @@ if resfile and os.path.exists(resfile) and os.path.getsize(resfile) > 0:
             human_pending = [str(x) for x in hp][:30]
         elif isinstance(hp, str) and hp.strip():
             human_pending = [x.strip() for x in re.split(r"[,;、\n]", hp) if x.strip()][:30]
-    except Exception:
-        verdict = rootv = ""
 # 2) 兜底：从文本输出智能解析（auditor 常把判定写进报告不写 json）
 if verdict not in ("pass", "partial", "block"):
     used = "text"
@@ -570,41 +590,71 @@ if verdict not in ("pass", "partial", "block"):
     m2 = re.search(r"证据等级\s*[:：=]?\s*(L[123])", txt)
     if m2:
         ev_level = m2.group(1).upper()
-    tail = txt.strip()[-1500:]
-    low = txt.lower()
-    has_pass = (re.search(r"verdict\s*[:=]\s*pass", low)
-                or ("验收结论" in txt and ("**pass**" in txt or "**通过**" in txt))
-                or "无阻塞项" in txt or "全部通过" in txt or "可验收" in txt
-                or re.search(r"判定.{0,6}pass", low) or "通过 4/4" in txt
-                or ("4/4" in txt and "通过" in txt))
-    frac_m = re.search(r"(\d+)\s*/\s*(\d+)\s*通过", low)
-    has_partial = (re.search(r"verdict\s*[:=]\s*partial", low) or "**partial**" in txt
-                   or "部分满足" in txt or "部分通过" in txt or "部分完成" in txt
-                   or "部分验收" in txt or "部分达成" in txt or "部分不通过" in txt
-                   or "部分未通过" in txt or "非全部通过" in txt or "未全部通过" in txt
-                   or re.search(r"判定.{0,6}partial", low)
-                   or (frac_m and int(frac_m.group(1)) > 0
-                       and int(frac_m.group(1)) < int(frac_m.group(2))
-                       and not has_pass))
-    has_block = ("不通过" in tail or "验收失败" in tail
-                 or re.search(r"verdict\s*[:=]\s*block", low)
-                 or "全部不通过" in txt or "0/4" in txt)
-    if has_pass and not has_partial:
-        verdict = "pass"
-        m = re.search(r"conf(?:idence)?\s*[:=]\s*([0-9.]+)", low)
-        confv = float(m.group(1)) if m else 0.8
-        passed, total, remaining = _text_counts(txt)
-    elif has_partial:
-        verdict = "partial"
-        m = re.search(r"conf(?:idence)?\s*[:=]\s*([0-9.]+)", low)
-        confv = float(m.group(1)) if m else 0.7
-        passed, total, remaining = _text_counts(txt)
-        reasons = txt.strip()[-400:].replace("\n", " ")[:380]
-    elif has_block:
-        verdict = "block"
-        m = re.search(r"conf(?:idence)?\s*[:=]\s*([0-9.]+)", low)
-        confv = float(m.group(1)) if m else 0.6
-        reasons = txt.strip()[-400:].replace("\n", " ")[:380]
+
+    # m02 auditor 迁层②（2026-09-04）：判定解析迁到 llmjson AuditorOutcome。
+    # auditor 若在输出正文里给出结构化判定 JSON（含判定词变体/脏格式），一律走
+    # parse_auditor_payload 归一化 → 拿到归一化对象（R1）+ layer/repaired 留痕（R3），
+    # **取代旧的手写 dict + 措辞正则判定**（判定词变体识别移交 llmjson，不再依赖
+    # 「判定…pass」这类措辞正则）。
+    # 环境依赖：需当前 python 能 import fw_runner（framework venv 才命中）；
+    # 不可 import 则静默落到下面的措辞启发式兜底（行为与旧版一致，只是删了判定词正则）。
+    parse_meta = {}
+    if not verdict and txt.strip():
+        try:
+            from fw_runner.llmjson import parse_auditor_payload as _apa
+            _llm_payload, _llm_errs, _llm_meta = _apa(txt)
+        except Exception:
+            _llm_payload, _llm_meta = None, None
+        if _llm_payload is not None:
+            verdict = _llm_payload["verdict"]
+            passed = int(_llm_payload["passed_count"])
+            total = int(_llm_payload["total_count"])
+            remaining = list(_llm_payload["remaining_items"])
+            used = "llmjson"
+            parse_meta = {"source": "llmjson", "layer": _llm_meta.get("layer"),
+                          "repaired": bool(_llm_meta.get("repaired")),
+                          "truncated": bool(_llm_meta.get("truncated")),
+                          "verdict": verdict}
+            cm = re.search(r"conf(?:idence)?\s*[:=]\s*([0-9.]+)", txt.lower())
+            confv = float(cm.group(1)) if cm else (0.8 if verdict == "pass"
+                                                   else (0.7 if verdict == "partial" else 0.6))
+    # 措辞启发式兜底（仅当 llmjson 判定没命中）。判定词变体已由 llmjson 层处理，
+    # 这里不再用「判定…pass / 判定…partial」措辞正则。
+    if not verdict and txt.strip():
+        tail = txt.strip()[-1500:]
+        low = txt.lower()
+        has_pass = (re.search(r"verdict\s*[:=]\s*pass", low)
+                    or ("验收结论" in txt and ("**pass**" in txt or "**通过**" in txt))
+                    or "无阻塞项" in txt or "全部通过" in txt or "可验收" in txt
+                    or "通过 4/4" in txt
+                    or ("4/4" in txt and "通过" in txt))
+        frac_m = re.search(r"(\d+)\s*/\s*(\d+)\s*通过", low)
+        has_partial = (re.search(r"verdict\s*[:=]\s*partial", low) or "**partial**" in txt
+                       or "部分满足" in txt or "部分通过" in txt or "部分完成" in txt
+                       or "部分验收" in txt or "部分达成" in txt or "部分不通过" in txt
+                       or "部分未通过" in txt or "非全部通过" in txt or "未全部通过" in txt
+                       or (frac_m and int(frac_m.group(1)) > 0
+                           and int(frac_m.group(1)) < int(frac_m.group(2))
+                           and not has_pass))
+        has_block = ("不通过" in tail or "验收失败" in tail
+                     or re.search(r"verdict\s*[:=]\s*block", low)
+                     or "全部不通过" in txt or "0/4" in txt)
+        if has_pass and not has_partial:
+            verdict = "pass"
+            m = re.search(r"conf(?:idence)?\s*[:=]\s*([0-9.]+)", low)
+            confv = float(m.group(1)) if m else 0.8
+            passed, total, remaining = _text_counts(txt)
+        elif has_partial:
+            verdict = "partial"
+            m = re.search(r"conf(?:idence)?\s*[:=]\s*([0-9.]+)", low)
+            confv = float(m.group(1)) if m else 0.7
+            passed, total, remaining = _text_counts(txt)
+            reasons = txt.strip()[-400:].replace("\n", " ")[:380]
+        elif has_block:
+            verdict = "block"
+            m = re.search(r"conf(?:idence)?\s*[:=]\s*([0-9.]+)", low)
+            confv = float(m.group(1)) if m else 0.6
+            reasons = txt.strip()[-400:].replace("\n", " ")[:380]
 # 3) 仍无判定 —— 区分两种本质不同的失败（2026-08-31 减负修复）：
 #   - 空输出/超时：auditor 根本没产出判定 → block（agent 能力问题，保持原语义，走升级链）
 #   - 有输出但措辞未匹配正则：auditor 审了、代码可能全绿，只是判定文本没被解析器识别
@@ -636,6 +686,35 @@ if verdict == "block" and not reasons:
 if verdict == "partial" and remaining and not reasons:
     reasons = "partial：剩余交付物 " + "；".join(remaining)
 blocker = "" if verdict == "pass" else (reasons or ("partial：剩余 " + "；".join(remaining)))
+# m02 auditor 迁层②（2026-09-04）：emit auditor.parse 事件（带 layer/repaired 留痕）进
+# dispatch.jsonl。记录判定解析的来源与「第几层捞回」（R3：每次降级必须留痕），供 runner / 升级链
+# 消费。best-effort：需能 import fw_runner 且 dispatch 路径可解析；失败静默，不阻断判定写出。
+try:
+    from fw_runner.events import EventLog as _EL
+    _droot = os.environ.get("TASK_ROOT") or "."
+    _dpath = os.path.join(_droot, "总日志", "dispatch.jsonl")
+    _start = 0
+    if os.path.exists(_dpath):
+        with open(_dpath, encoding="utf-8") as _dh:
+            for _ln in _dh:
+                try:
+                    _s = int(json.loads(_ln).get("seq") or 0)
+                    if _s > _start:
+                        _start = _s
+                except Exception:
+                    pass
+    _emeta = dict(parse_meta or {})
+    _emeta.setdefault("source", used)
+    _emeta.setdefault("verdict", verdict)
+    _emeta.setdefault("layer", (4 if verdict in ("block", "parse_failed") else
+                                (2 if _emeta.get("repaired") else 1)))
+    _EL(_dpath, run_id=os.environ.get("FW_RUN_ID") or "auditor",
+        start_seq=_start).emit(
+        "auditor.parse",
+        module=os.path.basename(os.environ.get("MODULE_DIR") or ""),
+        detail=_emeta)
+except Exception:
+    pass
 json.dump({"status": "ok", "verdict": verdict, "root": rootv,
            "confidence": confv, "reason": reasons, "blocker": blocker,
            "tokens": tok,

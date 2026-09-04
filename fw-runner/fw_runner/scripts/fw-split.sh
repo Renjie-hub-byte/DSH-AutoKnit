@@ -41,10 +41,10 @@ CONTEXT_FILE="tmp/split-context.json"
 
 echo "[fw-split] module=$(basename "$MODULE_DIR") exec=$EXECUTOR_ID round=$ROUND mode=$FW_SPLIT_MODE model=$FW_SPLIT_MODEL"
 
-# ---------- 1. 读上下文 + 预检（叶子模块不拆） ----------
-python3 - "$CONTEXT_FILE" "$FW_SPLIT_MIN_DELIVERABLES" <<'PYEOF'
+# ---------- 1. 读上下文 + 预检（叶子模块不拆 → cannot_split 收尾块下放） ----------
+python3 - "$CONTEXT_FILE" "$FW_SPLIT_MIN_DELIVERABLES" "$OUTCOME" <<'PYEOF'
 import json, sys
-path, min_d = sys.argv[1], int(sys.argv[2])
+path, min_d, outcome = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 try:
     with open(path, "r", encoding="utf-8") as f:
         ctx = json.load(f)
@@ -60,8 +60,21 @@ for k in ("mid", "objective", "deliverables", "review", "files"):
         sys.exit(2)
 deliv = [str(x).strip() for x in (ctx.get("deliverables") or []) if str(x).strip()]
 if len(deliv) <= min_d:
-    print(f"[fw-split] ✗ 交付物 {len(deliv)} ≤ {min_d}（叶子模块不拆，防打架），回人决策", file=sys.stderr)
-    sys.exit(3)
+    # BUG-20260903 修复：叶子模块预检原先 exit 3，被 runner 统一当作
+    # "split agent 调用失败"回人，违背 2026-08-28 语义定稿（剩余量不多时
+    # 由原 executor 收尾完成，不回人）。改为按协议写 cannot_split outcome
+    # + 退出 0：call_split_agent 会抛 CannotSplitError，runner 程序化生成
+    # 收尾块下放原 executor 继续完成剩余。
+    print(f"[fw-split] ⓘ 交付物 {len(deliv)} ≤ {min_d}（叶子模块不拆，防打架）→ cannot_split 收尾块下放", file=sys.stderr)
+    json.dump({"status": "ok", "verdict": "", "root": "",
+               "detail": {"split": {"action": "cannot_split",
+                                    "parent_module": str(ctx.get("mid") or "m00"),
+                                    "reason": f"交付物 {len(deliv)} ≤ min {min_d}：叶子模块不拆，剩余由原 executor 收尾块完成"},
+                          "_parse": {"source": "precheck", "layer": 0, "repaired": False,
+                                     "candidates": 0, "parsed": 0, "truncated": False}},
+               "reason": "叶子模块预检 → cannot_split 收尾"},
+              open(outcome, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    sys.exit(0)
 PYEOF
 rc=$?
 [ "$rc" -eq 0 ] || exit "$rc"
@@ -81,6 +94,28 @@ remaining = ctx.get("remaining_items") or []
 files = ctx.get("files") or []
 wnh = [str(x) for x in (ctx.get("will_not_have") or [])]
 mrem = ctx.get("module_remaining") or {}
+perr = ctx.get("protocol_errors") or []
+pattempt = ctx.get("protocol_attempt") or 1
+# U2（BUG-20260904）：崩溃/卡死路径 audit 缺席 → 剩余量是占位估算，不是真实判定。
+# 提示词显式告知 split agent 保守拆分，防止占位 0 冒充"快完了"导致闭眼拆。
+unknown_warn = ""
+if ctx.get("remaining_unknown"):
+    unknown_warn = (
+        "⚠️ 警告：本模块 auditor 判定缺失（executor 崩溃/卡死路径），剩余量仅为占位估算，"
+        "不可信。请按保守估计拆分（假设剩余工作可能远大于 estimate_lines 显示值），"
+        "next_block.objective 里说明这是崩溃恢复拆分。\\n"
+    )
+feedback = ""
+if perr:
+    # 层③ 错误回传（2026-09-04 小澈复查）：把字段级协议错误原样喂回去让模型自改。
+    # 一次 flash 回喂 ≪ 一次回人 + executor 从头重入（m05 实测三次重入 ~26 万 token）。
+    feedback = f"""
+
+【上次输出协议错误】（第 {pattempt} 次尝试，程序校验未通过，请**只修正下列字段**后重新输出完整 JSON）
+{chr(10).join(f"- {e}" for e in perr)}
+注意：字段必须存在且类型正确；id/name/objective 非空字符串；deliverables 是字符串数组；
+remaining_after 是对象（收尾块写 {{"scope": "", "estimate_lines": 0}}）；
+dependency_map 是对象，值必须是数组（如 {{"m05a": ["m04"]}}，不能写成裸字符串）。"""
 task = f"""{prompt}
 
 【本模块拆分上下文】（由 runner 收集，仅本模块；绝对路径以 {ctx.get('mid')} 为准）
@@ -91,14 +126,15 @@ objective：{ctx.get('objective')}
 父模块剩余量估计：scope={mrem.get('scope') or '(未知)'} estimate_lines={mrem.get('estimate_lines') or '(未知)'}
 交付物清单（完整，含未勾选）：{deliv}
 Auditor 最近判定：passed={ctx.get('passed_count')} total={ctx.get('total_count')} remaining={remaining}
-REVIEW.md 全文：
+{unknown_warn}REVIEW.md 全文：
 {ctx.get('review') or '(无)'}
 已完成文件（绝对路径）：
 {chr(10).join(files) if files else '(无)'}
 父模块依赖（上游）：{ctx.get('dependencies') or []}
 split_depth：{ctx.get('split_depth')}   executor_round：{ctx.get('executor_round')}   model_tier：{ctx.get('model_tier')}
 
-请严格按上面提示词输出合法 JSON（v2 协议：next_block 单块 + remaining_after；只输出 JSON，不要 markdown 代码块标记）。"""
+请严格按上面提示词输出合法 JSON（v2 协议：next_block 单块 + remaining_after；只输出 JSON，不要 markdown 代码块标记）。{feedback}"""
+
 open("tmp/SPLIT_TASK.md", "w", encoding="utf-8").write(task)
 print(f"[fw-split] split 指令已拼装 → tmp/SPLIT_TASK.md（交付物 {len(deliv)} 项，提示词 {prompt_path}）")
 PYEOF
@@ -134,7 +170,9 @@ split_json = {
     "context_from_parent": "demo 驱动：链路联调用拆分结果（未真实拆分）",
 }
 json.dump({"status": "ok", "verdict": "", "root": "",
-           "detail": {"split": split_json},
+           "detail": {"split": split_json,
+                      "_parse": {"source": "demo", "layer": 1, "repaired": False,
+                                 "candidates": 1, "parsed": 1, "truncated": False}},
            "reason": "demo 驱动（链路联调）"},
           open(outcome, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 print(f"[fw-split] demo 完成 → {outcome}")
@@ -159,8 +197,32 @@ fi
 
 ROLE_TASK="$(cat tmp/SPLIT_TASK.md)"
 : > tmp/split_output.txt
-FW_SPAWN="$(dirname "$0")/fw-spawn.py"
-echo "[fw-split] 调 dsh headless 拆分（model=${FW_SPLIT_MODEL}）…"
+# BUG-20260903-A① 修复：fw-spawn.py 实际在包根 bin/ 目录，原 `$(dirname "$0")/fw-spawn.py`
+# 指向 scripts/fw-spawn.py 不存在 → python3 报错被 &>/dev/null 吞掉 → dsh 从未启动 →
+# split_output.txt 恒空 → 提取段 exit 3「agent 非零退出(3)」。改为按候选路径探测 + 缺失即清晰报错。
+#
+# 2026-09-04 小澈复查补强：本脚本是唯一需要**跨目录**找 fw-spawn.py 的角色（split 被收进
+# 包内 fw_runner/scripts/，而 fw-spawn.py 与 executor/auditor 还在包外 fw-runner/bin/）。
+# 相对路径依赖安装布局，一旦换布局（wheel 进 site-packages）就再次"方法根本不存在"。
+# 所以候选顺序按"确定性从高到低"排：显式 env > FW1（autoknit launcher 必带）> 相对包根 > 相对自身。
+FW_SPAWN="${FW_SPAWN:-}"
+if [ -z "$FW_SPAWN" ]; then
+  for cand in "${FW1:+$FW1/fw-runner/bin/fw-spawn.py}" \
+              "$(dirname "$0")/../../bin/fw-spawn.py" \
+              "$(dirname "$0")/fw-spawn.py"; do
+    if [ -n "$cand" ] && [ -f "$cand" ]; then FW_SPAWN="$cand"; break; fi
+  done
+fi
+if [ ! -f "$FW_SPAWN" ]; then
+  echo "[fw-split] ✗ 缺 fw-spawn.py：FW_SPAWN 未设，且候选路径全部未命中" >&2
+  echo "           FW1=${FW1:-'(未设置)'}" >&2
+  echo "           1) \${FW1}/fw-runner/bin/fw-spawn.py" >&2
+  echo "           2) $(dirname "$0")/../../bin/fw-spawn.py" >&2
+  echo "           3) $(dirname "$0")/fw-spawn.py" >&2
+  echo "           修法：经 autoknit 入口调用（它会 export FW1），或直接 export FW_SPAWN=<路径>" >&2
+  exit 2
+fi
+echo "[fw-split] 调 dsh headless 拆分（model=${FW_SPLIT_MODEL}，spawn=${FW_SPAWN}）…"
 
 # 可选：指定 split 模型（flash 档）→ 生成 patch 覆盖 agent-default-model
 # provider 可配：默认 deepseek-official，可用 FW_SPLIT_PROVIDER 覆盖
@@ -181,11 +243,20 @@ PATCHEOF
   DSH_PATCH_ARG="--patch tmp/model-patch.yml"
 fi
 
+# P1-4（2026-09-04 小澈复查，台账 #6）：原先 &>/dev/null 把 dsh 的全部输出丢进黑洞，
+# 且 wait 的退出码也丢了——BUG-20260903-A① 排了整场的真凶就是这个：dsh 从未启动，
+# 而现场只显示"未找到拆解 JSON"。改为落盘 split_spawn.log + 捕获退出码 + 失败带上下文。
+: > tmp/split_spawn.log
 python3 "$FW_SPAWN" -- "$DSH_BIN" --profile headless $DSH_PATCH_ARG "$ROLE_TASK" \
     --out tmp/split_output.txt --timeout "$FW_SPLIT_TIMEOUT" \
-    --cwd "$MODULE_DIR" &>/dev/null &
+    --cwd "$MODULE_DIR" > tmp/split_spawn.log 2>&1 &
 SPAWN_PID=$!
-wait $SPAWN_PID 2>/dev/null
+SPAWN_RC=0
+wait $SPAWN_PID || SPAWN_RC=$?
+if [ "$SPAWN_RC" -ne 0 ]; then
+  echo "[fw-split] ⚠ spawn 退出码 $SPAWN_RC（dsh 可能没起来/超时），日志 tmp/split_spawn.log 尾部：" >&2
+  tail -n 8 tmp/split_spawn.log | sed 's/^/    /' >&2
+fi
 
 # ---------- 4. 提取拆解 JSON → 写 outcome ----------
 python3 - "$OUTCOME" "$CONTEXT_FILE" <<'PYEOF'
@@ -197,16 +268,36 @@ except Exception as e:
     print(f"[fw-split] ✗ 读 dsh 输出失败: {e}", file=sys.stderr)
     sys.exit(2)
 
+# ---- 提取层（层②格式修复 / 层④兜底）：单一实现优先走 fw_runner.llmjson ----
+# 2026-09-04 小澈复查 P1-5：原先这里有一份与 llmjson.extract_json_objects 逐行等价的
+# 内联实现，两份并存且语义已分叉（这边取"最后一个含 action"，那边取"第一个过 schema"）。
+# 现在统一由 llmjson 提供，本脚本只决定选取策略；fw_runner 不可导入时才退回内联兜底
+# （保留"脚本能脱离包独立跑"的旧能力），并在 meta 里标 source=inline-fallback 留痕。
+_llm = None
+try:
+    from fw_runner import llmjson as _llm
+except Exception:
+    _llm = None
+
+
 def _extract(text):
-    # 去掉 markdown 代码块围栏后，扫描所有平衡 JSON 对象
-    lines = []
-    for ln in text.splitlines():
-        s = ln.strip()
-        if s.startswith("```"):
-            continue
-        lines.append(ln)
+    """返回 (拆解 dict, 解析留痕 meta)。
+
+    meta.layer: 1=直解  2=json_repair 修复  4=兜底/失败    meta.source: llmjson | inline-fallback
+    """
+    if _llm is not None:
+        objs, meta = _llm.extract_json_objects_with_meta(text)
+        meta = dict(meta, source="llmjson",
+                    layer=2 if meta.get("repaired") else (1 if objs else 4))
+        for d in reversed(objs):          # agent 通常在末尾给终稿 → 取最后一个含 action 的
+            if isinstance(d.get("action"), str):
+                return d, meta
+        return (objs[-1], meta) if objs else (None, meta)
+    # ---- 内联兜底（fw_runner 不可导入时）----
+    lines = [ln for ln in text.splitlines() if not ln.strip().startswith("```")]
     text = "\n".join(lines)
     cands, i = [], 0
+    truncated = False
     while True:
         start = text.find("{", i)
         if start < 0:
@@ -227,38 +318,54 @@ def _extract(text):
                     end = j
                     break
         if end < 0:
+            truncated = True
             i = start + 1
             continue
         cands.append(text[start:end + 1])
         i = end + 1
-    parsed = []
+    try:
+        import json_repair as _jr
+    except ImportError:
+        _jr = None
+    parsed, repaired = [], False
     for c in cands:
+        d = None
         try:
             d = json.loads(c)
-            if isinstance(d, dict):
-                parsed.append(d)
         except Exception:
-            pass
-    # 取最后一个含 action 的对象（拆分决策）——agent 通常最后给出最终 JSON
+            if _jr is not None:
+                try:
+                    d = _jr.loads(c)
+                    repaired = True
+                except Exception:
+                    d = None
+        if isinstance(d, dict):
+            parsed.append(d)
+    meta = {"source": "inline-fallback", "candidates": len(cands), "parsed": len(parsed),
+            "repaired": repaired, "truncated": truncated,
+            "layer": 2 if repaired else (1 if parsed else 4)}
     for d in reversed(parsed):
         if isinstance(d.get("action"), str):
-            return d
-    return parsed[-1] if parsed else None
+            return d, meta
+    return (parsed[-1], meta) if parsed else (None, meta)
 
 ctx = json.load(open(context_file, encoding="utf-8"))
-split_json = _extract(text)
+split_json, parse_meta = _extract(text)
 if split_json is None:
-    print("[fw-split] ✗ dsh 输出中未找到拆解 JSON（详见 tmp/split_output.txt 尾部）", file=sys.stderr)
+    print(f"[fw-split] ✗ dsh 输出中未找到拆解 JSON（提取层 meta={parse_meta}，"
+          f"实现在 {parse_meta.get('source')}）；详见 tmp/split_output.txt 尾部", file=sys.stderr)
     tail = text.strip().splitlines()[-8:]
     for ln in tail:
         print("  " + ln, file=sys.stderr)
     sys.exit(3)
 
 json.dump({"status": "ok", "verdict": "", "root": "",
-           "detail": {"split": split_json},
+           "detail": {"split": split_json, "_parse": parse_meta},
            "reason": f"dsh headless split agent 输出（{ctx.get('mid')}）"},
           open(outcome, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-print(f"[fw-split] 完成，拆解 JSON → {outcome}（action={split_json.get('action')}）")
+print(f"[fw-split] 完成，拆解 JSON → {outcome}（action={split_json.get('action')} "
+      f"layer={parse_meta.get('layer')} repaired={parse_meta.get('repaired')}）")
+
 PYEOF
 rc=$?
 [ "$rc" -eq 0 ] || exit "$rc"

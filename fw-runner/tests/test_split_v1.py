@@ -20,6 +20,7 @@ from fw_runner.split import (
     SPLIT_CONTEXT_REL,
     CannotSplitError,
     SplitCallError,
+    SplitInfraError,
     SplitJSONError,
     build_wrapup_split_json,
     call_split_agent,
@@ -28,6 +29,7 @@ from fw_runner.split import (
     insert_children_into_order,
     scaffold_children,
     validate_split_json,
+    _resolve_protocol_retries,
 )
 
 from helpers import build_task  # noqa: E402
@@ -127,27 +129,28 @@ def test_validate_split_json_not_a_dict():
 
 
 def test_validate_split_json_next_block_missing_fields():
+    """2026-09-04 行为变更（llmjson/Pydantic 接管）：缺字段仍拒绝（关键语义字段硬约束），
+    报错文案从「next_block.X 缺失」变为 Pydantic 字段级错误（含 objective/deliverables 字段名）。"""
     data = dict(VALID_SPLIT)
     data["next_block"] = {"id": "m02a", "name": "核心算法"}
     ok, errors = validate_split_json(data)
     assert ok is False
     joined = "; ".join(errors)
-    assert "next_block.objective 缺失" in joined
-    assert "next_block.deliverables 缺失" in joined
-    assert "next_block.files 缺失" in joined
+    assert "objective" in joined
+    assert "deliverables" in joined
 
 
 def test_validate_split_json_remaining_after_bad():
+    """2026-09-04 行为变更（llmjson 容错）：坏行数估计（"abc"）coercion 到 0 放行——
+    行数只是报表量，不再炸拆分链路（BUG-20260903 案例教训）。"""
     data = dict(VALID_SPLIT)
     data["remaining_after"] = {"scope": "", "estimate_lines": "abc"}
     ok, errors = validate_split_json(data)
-    assert ok is False
-    joined = "; ".join(errors)
-    assert "remaining_after.estimate_lines 必须是整数" in joined
+    assert ok is True and not errors
 
 
 def test_validate_split_json_wrapup_block_allowed():
-    """单块语义（2026-08-28 杰哥定稿）：remaining_after 空 = 剩余全量一块下放，做完即 done。"""
+    """单块语义（2026-08-28 Owner定稿）：remaining_after 空 = 剩余全量一块下放，做完即 done。"""
     data = dict(VALID_SPLIT)
     data["remaining_after"] = {"scope": "", "estimate_lines": 0}
     ok, errors = validate_split_json(data)
@@ -171,6 +174,10 @@ def test_collect_split_context_inputs(split_root):
     assert c["passed_count"] == 1
     assert c["total_count"] == 4
     assert c["remaining_items"] == ["数据预处理", "API 接口", "单元测试"]
+    # U2（BUG-20260904）：audit 真实传入 → remaining_unknown=False；缺席 → True
+    assert c["remaining_unknown"] is False
+    c_none = collect_split_context(ctx, state, "m02", audit=None)
+    assert c_none["remaining_unknown"] is True
     assert "核心算法框架已完成" in c["review"]
     assert c["review_done"] == ["核心算法框架已完成"]
     assert any(p.endswith("src/algorithm.py") for p in c["files"])
@@ -178,7 +185,12 @@ def test_collect_split_context_inputs(split_root):
     # v2 新增：总目标层（task_goal / will_not_have / module_remaining 缺省兼容）
     assert "task_goal" in c
     assert "will_not_have" in c
-    assert c["module_remaining"] == {"scope": "", "estimate_lines": None}
+    # M1（7a）：module_remaining 动态化——REVIEW done=1；静态 estimate_lines 缺失
+    # （None）→ 不按占比计算，回退 static_fallback 并留痕
+    mr = c["module_remaining"]
+    assert mr["source"] == "static_fallback"
+    assert mr["review_done_count"] == 1
+    assert isinstance(mr["scope"], str) and mr["estimate_lines"] is None
 
 
 def test_collect_split_context_audit_from_driveroutcome(split_root):
@@ -421,3 +433,145 @@ def test_full_split_pipeline(split_root):
     assert ctx.modules["m02a"].dir.parent == ctx.modules["m02"].dir.parent
     # remaining_after 透传进 split-outcome（递归基础）
     assert split_json["remaining_after"]["estimate_lines"] == 600
+
+# ---------- 层③ 协议重试回喂 / 故障分类（2026-09-04 小澈复查四条落地） ----------
+
+def _counting_split_driver(payloads, parse_meta=None):
+    """按次返回拆解 JSON（列表用尽后重复最后一个），并记录调用次数与收到的 context。"""
+    calls = {"n": 0, "contexts": []}
+
+    def fn(ctx):
+        calls["n"] += 1
+        import json as _json
+        calls["contexts"].append(_json.loads(
+            (ctx.module.dir / SPLIT_CONTEXT_REL).read_text(encoding="utf-8")))
+        payload = payloads[min(calls["n"], len(payloads)) - 1]
+        detail = {"split": payload}
+        if parse_meta:
+            detail["_parse"] = dict(parse_meta)
+        return DriverOutcome(status="ok", detail=detail)
+    return InlineAgentDriver(fn), calls
+
+
+def test_split_agent_retries_and_feeds_back_errors(split_root):
+    """层③：协议故障 → 字段级错误写回 context 供 fw-split.sh 回喂，第二次成功。"""
+    ctx, state = _ctx_and_state(split_root)
+    bad = dict(VALID_SPLIT, next_block={**VALID_SPLIT["next_block"], "id": ""})
+    good = VALID_SPLIT
+    driver, calls = _counting_split_driver([bad, good])
+    events = []
+    out = call_split_agent(ctx, "m02", collect_split_context(ctx, state, "m02"), driver=driver,
+                           on_event=lambda k, d: events.append((k, d)))
+    assert calls["n"] == 2
+    assert out["next_block"]["id"] == "m02a"
+    assert "protocol_errors" not in calls["contexts"][0]          # 首试不带反馈
+    assert calls["contexts"][1]["protocol_errors"]                # 回喂轮带字段级错误
+    assert any("next_block.id" in e for e in calls["contexts"][1]["protocol_errors"])
+    assert [k for k, _ in events] == ["split.protocol_retry", "split.parse"]
+    assert events[-1][1]["attempt"] == 2 and events[-1][1]["retries_used"] == 1
+
+
+def test_split_agent_exhausts_retries_then_raises(split_root):
+    """回喂次数用尽（默认 1+2=3 次）→ SplitJSONError，且带最后一次的字段错误。"""
+    ctx, state = _ctx_and_state(split_root)
+    bad = dict(VALID_SPLIT, next_block={**VALID_SPLIT["next_block"], "id": ""})
+    driver, calls = _counting_split_driver([bad])
+    events = []
+    with pytest.raises(SplitJSONError) as ei:
+        call_split_agent(ctx, "m02", collect_split_context(ctx, state, "m02"), driver=driver,
+                         on_event=lambda k, d: events.append((k, d)))
+    assert calls["n"] == 3
+    assert "连续 3 次失败" in str(ei.value)
+    assert events[-1][0] == "split.protocol_exhausted"
+
+
+def test_split_agent_retries_configurable(split_root, monkeypatch):
+    ctx, state = _ctx_and_state(split_root)
+    bad = dict(VALID_SPLIT, next_block={**VALID_SPLIT["next_block"], "objective": ""})
+    driver, calls = _counting_split_driver([bad])
+    with pytest.raises(SplitJSONError):
+        call_split_agent(ctx, "m02", collect_split_context(ctx, state, "m02"),
+                         driver=driver, retries=0)
+    assert calls["n"] == 1          # retries=0 → 不回喂，一次定生死
+
+
+def test_split_agent_infra_failure_not_retried(split_root):
+    """缺 fw-spawn.py / dsh 未就绪（exit 2）= 基础设施故障：不回喂，快失败并正确归因。"""
+    ctx, state = _ctx_and_state(split_root)
+    calls = {"n": 0}
+
+    def fn(actx):
+        calls["n"] += 1
+        return DriverOutcome(status="error", reason="agent 非零退出(2)",
+                             detail={"exit": 2, "stderr": "缺 fw-spawn.py（FW_SPAWN 或候选路径均未命中）"})
+    with pytest.raises(SplitInfraError) as ei:
+        call_split_agent(ctx, "m02", collect_split_context(ctx, state, "m02"),
+                         driver=InlineAgentDriver(fn))
+    assert calls["n"] == 1
+    assert "基础设施" in str(ei.value)
+
+
+def test_split_agent_missing_outcome_is_infra(split_root):
+    """status=ok 但没有任何拆解产物 = 脚本没落 outcome，属环境问题，不是模型不合规。"""
+    ctx, state = _ctx_and_state(split_root)
+    calls = {"n": 0}
+
+    def fn(actx):
+        calls["n"] += 1
+        return DriverOutcome(status="ok", detail={})
+    with pytest.raises(SplitInfraError):
+        call_split_agent(ctx, "m02", collect_split_context(ctx, state, "m02"),
+                         driver=InlineAgentDriver(fn))
+    assert calls["n"] == 1
+
+
+def test_split_agent_parse_meta_reaches_event(split_root):
+    """层④ 降级留痕：fw-split.sh 写的 detail._parse 必须透传到事件（不静默降级）。"""
+    ctx, state = _ctx_and_state(split_root)
+    driver, _calls = _counting_split_driver([VALID_SPLIT],
+                                            parse_meta={"layer": 2, "repaired": True,
+                                                        "source": "llmjson", "truncated": False})
+    events = []
+    call_split_agent(ctx, "m02", collect_split_context(ctx, state, "m02"), driver=driver,
+                     on_event=lambda k, d: events.append((k, d)))
+    meta = events[-1][1]
+    assert meta["layer"] == 2 and meta["repaired"] is True and meta["source"] == "llmjson"
+
+
+def test_split_protocol_retries_from_runtime_config(split_root):
+    """split_protocol_retries 是 runtime 键（任务书/dflow.yaml/CLI 三通道都要能覆盖）。"""
+    from fw_runner.config import RUNTIME_KEYS
+    from fw_runner.context import _resolve_runtime_config
+    assert "split_protocol_retries" in RUNTIME_KEYS
+    cfg = _resolve_runtime_config({"runtime": {}}, overrides={"split_protocol_retries": "0"})
+    assert cfg.split_protocol_retries == 0
+    ctx, state = _ctx_and_state(split_root)
+    ctx.config.split_protocol_retries = 0
+    bad = dict(VALID_SPLIT, next_block={**VALID_SPLIT["next_block"], "id": ""})
+    driver, calls = _counting_split_driver([bad])
+    with pytest.raises(SplitJSONError):
+        call_split_agent(ctx, "m02", collect_split_context(ctx, state, "m02"), driver=driver)
+    assert calls["n"] == 1          # 配置生效：不回喂
+
+
+def test_split_protocol_retries_env_and_negative(split_root, monkeypatch):
+    """env 在调用时读取（不是 import 时）；负数按 0 处理，不会变成多次调用。"""
+    ctx, state = _ctx_and_state(split_root)
+    monkeypatch.setenv("FW_SPLIT_PROTOCOL_RETRIES", "1")
+    assert _resolve_protocol_retries(ctx) == 1
+    monkeypatch.setenv("FW_SPLIT_PROTOCOL_RETRIES", "-5")
+    assert _resolve_protocol_retries(ctx) == 0
+    assert _resolve_protocol_retries(ctx, explicit=3) == 3      # 显式参数最高
+
+
+
+def test_dynamic_remaining_decay():
+    """M1（7a）：剩余量按 done/todo 占比衰减——done 增长单调递减（死循环诱因修复）。"""
+    from fw_runner.split import _dynamic_remaining as dr
+    assert dr(700, 0, 3) == (700, "review_dynamic")      # 首轮：无完成，剩余=全量
+    assert dr(700, 1, 2) == (467, "review_dynamic")      # 完成 1/3 → 衰减
+    assert dr(700, 2, 1) == (233, "review_dynamic")      # 完成 2/3 → 继续衰减
+    assert dr(700, 3, 0) == (1, "review_dynamic")        # 全完成 → 收尾
+    assert dr(None, 1, 2) == (None, "static_fallback")   # 静态缺失 → 回退留痕
+    assert dr("abc", 1, 2) == ("abc", "static_fallback")
+    assert dr(0, 1, 2) == (0, "static_fallback")

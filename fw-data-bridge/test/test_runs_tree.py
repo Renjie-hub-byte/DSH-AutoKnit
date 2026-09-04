@@ -272,3 +272,66 @@ def test_old_tasks_endpoints_no_regression(live_server, tmp_path):
     status, body = client.get(_url(task_dir, "/api/tasks/run-mock"))
     assert status == 200
     assert body["task_name"] == "旧端点"
+
+
+# ============================================ 决策卡三态：human_answers + 事件白名单 ----
+def test_tree_exposes_human_answers(tmp_path):
+    """tree.human_answers（只增字段）：透出 总日志/human_answer.json 的回复；
+    文件缺失 → {} 确定性降级。"""
+    import json as _json
+    import os as _os
+
+    from fwapi.dsh import task as task_source
+
+    snap = _sample_snapshot()
+    task_dir = make_snapshot(tmp_path, snap)
+    # 未写 human_answer.json → {}
+    assert task_source.get_run_tree(task_dir, snap["run_id"])["human_answers"] == {}
+
+    log_dir = _os.path.join(task_dir, "总日志")
+    with open(_os.path.join(log_dir, "human_answer.json"), "w", encoding="utf-8") as fh:
+        _json.dump({"answers": {"m01": {
+            "module": "m01", "code": "D",
+            "text": "把目录移到 src/ 下", "root": "self",
+            "reason": "agent 非零退出(124)", "answered_at": "2026-09-02T01:45:00+08:00"}}}, fh, ensure_ascii=False)
+    body = task_source.get_run_tree(task_dir, snap["run_id"])
+    ans = body["human_answers"]["m01"]
+    assert ans["code"] == "D"
+    assert ans["text"] == "把目录移到 src/ 下"
+    assert ans["answered_at"] == "2026-09-02T01:45:00+08:00"
+    assert ans["reason"] == "agent 非零退出(124)"
+
+    # 损坏 JSON → {} 确定性
+    with open(_os.path.join(log_dir, "human_answer.json"), "w", encoding="utf-8") as fh:
+        fh.write("{broken")
+    assert task_source.get_run_tree(task_dir, snap["run_id"])["human_answers"] == {}
+
+
+def test_timeline_includes_needs_human_events(tmp_path):
+    """timeline 契约白名单补 module.needs_human / module.human_rerun / run.resume
+    （决策卡三态用：needs_human 进入/人重跑/流程解决时间线）。"""
+    import json as _json
+    import os as _os
+
+    from fwapi.dsh import task as task_source
+
+    snap = _sample_snapshot()
+    task_dir = make_snapshot(tmp_path, snap)
+    log_dir = _os.path.join(task_dir, "总日志")
+    rows = [
+        {"seq": 1, "ts": "t0", "run_id": snap["run_id"], "event": "run.start", "module": None, "detail": {}},
+        {"seq": 42, "ts": "t1", "run_id": snap["run_id"], "event": "module.needs_human",
+         "module": "m01", "detail": {"reason": "agent 非零退出(124)"}},
+        {"seq": 50, "ts": "t3", "run_id": snap["run_id"], "event": "module.human_rerun",
+         "module": "m01", "detail": {}},
+        {"seq": 60, "ts": "t9", "run_id": snap["run_id"], "event": "module.done",
+         "module": "m01", "detail": {"needs_human_resolved_by": "process"}},
+    ]
+    with open(_os.path.join(log_dir, "dispatch.jsonl"), "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(_json.dumps(r, ensure_ascii=False) + "\n")
+    timeline = task_source.get_run_timeline(task_dir, snap["run_id"])
+    events = [e.get("event") for e in timeline]
+    assert "module.needs_human" in events
+    assert "module.human_rerun" in events
+    assert "module.done" in events

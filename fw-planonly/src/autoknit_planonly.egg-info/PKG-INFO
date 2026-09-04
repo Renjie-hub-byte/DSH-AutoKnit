@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: autoknit-planonly
+Version: 0.1.0
+Summary: autoknit plan-only 模式：只跑 planner、产出 task.yaml、写 checkpoint、打印摘要
+Requires-Python: >=3.9
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: jsonschema>=4.0

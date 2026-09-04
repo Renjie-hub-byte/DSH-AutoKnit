@@ -1,0 +1,2 @@
+[console_scripts]
+autoknit = autoknit.cli:main

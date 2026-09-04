@@ -108,3 +108,16 @@ def test_run_config_to_dict_includes_v1_fields():
     assert d["enable_fallback_model"] is True
     assert d["fallback_model"] == "pro"
     assert d["model_tiers"] == ["flash", "pro"]
+
+
+def test_partial_counters_survive_checkpoint_roundtrip():
+    """resume 必须保住同因指纹与零进展计数，否则 --resume 后回人判定会被重置。"""
+    from fw_runner.model import ModuleAgentState
+    s = ModuleAgentState()
+    s.no_progress_streak = 2
+    s.last_remaining_sig = "登录接口|导出接口"
+    s.split_depth = 1
+    r = ModuleAgentState.from_dict(s.to_dict())
+    assert r.no_progress_streak == 2
+    assert r.last_remaining_sig == "登录接口|导出接口"
+    assert r.split_depth == 1

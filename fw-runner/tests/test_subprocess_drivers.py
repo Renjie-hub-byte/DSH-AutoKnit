@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import Path
 
+from helpers import unavailable_split_driver
 from fw_runner.cli import main as cli_main
 from fw_runner.drivers import ScriptedAgentDriver
 from fw_runner.runner import run
@@ -95,6 +96,7 @@ def test_driver_nonzero_exit_routes_to_upgrade(tmp_path):
     aud_driver = ScriptedAgentDriver(PY + str(BIN / "fw-auditor-demo"), role="auditor")
 
     result = run(root, executor_driver=exec_driver, auditor_driver=aud_driver,
+                 split_driver=unavailable_split_driver(),
                  overrides={"retry_before_switch": 1, "max_executor_switches": 0})
     # 崩溃即 block/self；retry_before_switch=1 且 max_switches=0 → switch 用尽后走 SPLIT 路由
     # （C4 真实尝试拆分，缺 fw-split.sh）→ split_failed → 回人

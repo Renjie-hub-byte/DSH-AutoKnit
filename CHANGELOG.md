@@ -5,45 +5,6 @@
 
 ---
 
-## 2026-09-03 —— v1.0.1：BUG-124 全链修复 + 人工决策语义（压测复跑实战）
-
-> 触发：coldstart 复跑压测（同 PRD 同基线两晚对照）。v2 暴露 BUG-124 空转卡死；
-> 修复后 v4 干净收官：701,977 计费 / 33.6min / 0 打回 0 换人 0 回人（vs 基线 748,802 / ~37min，n=2）。
-
-### 1. fw-runner/bin/fw-executor.sh —— HAS_PRODUCT 误判 + EXEC_TASK 反馈失忆（BUG-124 核心）
-- **改动**：① 产物检测 src/ 为空时，打回信息写明 src/ 契约+纠正动作+模块自查清单（不再只说"未产出实质产物"）
-  ② EXEC_TASK【前轮反馈】从运行时快照取上轮打回原因（v1 读任务书 yaml 静默失效）+ 人审意见注入
-- **为什么**：m03 面板插件交付位置合法但不在 src/ → 粗筛误判空壳 → 6 轮失忆空转烧 ~20 万 token；
-  executor 不知道为何被打回就会重复犯错
-- **验证**：v4 全程未触发一次无效打回；partial 阈值收紧后无隐性成本
-
-### 2. fw-runner/fw_runner/{model,runner}.py —— partial 升级阈值 + needs_human 生命周期
-- **改动**：`max_partial_rounds` 5→2（同因打回 1 次重试，第 2 次回人）；模块 done（含 split 聚合）时
-  清 needs_human 标记 + 事件带 `needs_human_resolved_by`
-- **为什么**：root=upstream 的结构性 partial 重试是无效功；「等待人工」窗口在流程自愈后不消失，
-  人永远分不清新旧的待处理
-- **验证**：v4 三模块每模块恰好 2 轮，0 空转；面板窗口随 done 闭环
-
-### 3. fw-runner/bin/fw-auditor.sh —— 人审意见注入采证上下文
-- **改动**：auditor 任务书新增【人审意见 · 真人已阅】段（human_answer.json answers[mid]）
-- **为什么**：needs_human 回人后人已表态，auditor 不知道人的决定就会对同因盲目打回；
-  人接受现状的项不强行判 fail（human_pending 原样保留）
-- **验证**：静态验证 + 数据契约对齐
-
-### 4. fw-panel + fw-data-bridge —— 决策卡三态 + 回复事件（小澈交付）
-- **改动**：决策卡问询 5 项（模块/原因/时间/ABCD 含义/草稿）；三态 pending→resolved(人/流程)→关闭；
-  文本回复智能归类 custom；桥 +`check_human_answer_updates`（人回复即事件，面板立即可见已解决）
-- **为什么**：人在环没上下文没法决策（杰哥实测「我没法决策啊」）；人回复后前端不刷新（石沉大海）
-- **验证**：pytest 115 / npm 120 / verify 11/11；对拍桥桶总和 = token 总账精确相等
-
-### 5. presets/fw-planner + fw-tools/fw-new.sh + fw-env-bootstrap —— 源头防歪三件
-- **改动**：① planner 词汇表（interfaces.method 非空、python_packages 用 pip 正式包名）
-  ② planner 交付位置规则（交付一律模块 src/，PRD 其他目录为只读工作对象，验收必须可达）
-  ③ fw-new 确认场景自适应（交互挂起人工审/无人值守自动继续）④ bootstrap set -u 防御
-- **为什么**：planner 输出 method:[] / 包名 yaml / 交付位置歧义 / 无人值守悬挂——全是实测踩过的
-- **验证**：v4 planner 一次过 scaffold 校验、环境预置通过
-
-
 ## 2026-08-21 —— 首战（ai扩展资源库v2）修复台账
 
 ### 1. fw-runner/fw_runner/model.py —— DriverOutcome.substance 丢失
@@ -237,7 +198,7 @@
      ③ 树深 ≤3，更深改流水线拆分
      ④ 骨架先行（每层先出整体骨架再分发）
   2. **lh 哲学**（本地 skill）：任务可粗但"验收标准必须写死"、喂结果不喂过程、轮数宁多勿少可续轮
-  3. **杰哥观察**：按"单次执行轮数"拆（做完就做完，没做完下轮续）
+  3. **Owner观察**：按"单次执行轮数"拆（做完就做完，没做完下轮续）
 - **fw-new planner 提示词重写为 A/B/C 三段**：
   A. 为什么这么拆（prd-split 铁律）
   B. 拆多大（2-3 轮能做完 + objective 第一步 + acceptance 增量可过 + 验收写死 + round_estimate）
@@ -251,7 +212,7 @@
 - 三份文档：工作流还原-v1.md / Manager设计参考-DeepSeek评审.md / 设计-v0.5-递归分层planner.md
 - 核心：Manager 按需唤醒（程序规则到头才叫，不每轮参与）；全景由程序汇编；Auditor 加 partial 三态；
   阈值表（70%/2/8/15）；指令格式（retry/split/human/continue）；human_question/answer 通道
-- 状态：杰哥拍板"先参考，不做"。要动工时按 Manager设计参考-DeepSeek评审.md 第十二节顺序落地
+- 状态：Owner拍板"先参考，不做"。要动工时按 Manager设计参考-DeepSeek评审.md 第十二节顺序落地
 
 ---
 
@@ -328,3 +289,170 @@
 - **改动**：新增 `test_model_v1/test_upgrade_v1/test_split_v1/test_runner_v1/test_auditor_v1/test_events_checkpoint_v1/test_human_v1`
 - **验证**：全量 `python3.11 -m pytest tests/ -x` 最终 **157 passed in 15.60s，退出码 0**（68 基线 → 157，逐轮不回退）
 - **遗留**：真 dsh 端到端拆分 + 真终端 human 交互属交付后人工验证（约束 3，GUI/交互交真人）
+
+---
+
+## 2026-09-04 —— llmjson 加固复查：四层容错契约落地（小澈）
+
+> 输入：`审查指南-2026-09-04-框架bug修复与优化空间.md`（PM）
+> 报告：`审查-2026-09-04-llmjson加固复查与优化空间.md`
+> 主线：把Owner的「①Prompt ②repair+Pydantic ③错误回传 ④兜底捞取」四层图从口号变成代码里的层间契约。
+
+### 1. fw-runner/fw_runner/split.py —— P0-1 归一化结果写回（校验=转换，不是判定）
+- **改动**：`validate_split_json` Pydantic 主路径改为「先在校验副本上 `model_validate`，
+  成功才 `data.clear()+update(model_dump())` 原地写回」；失败时 data 原样保留
+- **为什么**：原先只判断放行就丢弃 model，而 `call_split_agent`/`scaffold_children`/
+  `_build_child_module_dict:533` 读的是原始 dict → 顿号串 deliverables（llmjson 明确
+  放行的合法输入）被 `[str(x) for x in <str>]` **按字符迭代** → 子模块 deliverables/
+  acceptance 炸成单字条目 → auditor 对单字验收 → partial 循环。改造前旧手写校验是
+  `isinstance(list)` 直接拒，属 loud fail；改造后变 silent corruption，是**新增**故障模式
+- **验证**：`test_llmjson.py::TestCoercionWriteBack` 6 用例（含"校验失败不得清空 data"
+  与"extra 字段透传"两条护栏）
+
+### 2. fw-runner/fw_runner/llmjson.py —— P0-2 两个高频漂移被新校验误拒（相对旧行为回退）
+- **改动**：`RemainingAfter.scope` 补 `field_validator(mode="before")`（null→""）；
+  `_coerce_depmap` 由「只判外层 dict」改为**逐值 coerce**（裸串/顿号串→列表、非 dict→{}）
+- **为什么**：`"scope": null` 与 `dependency_map: {"m05a": "m04"}` 是 LLM 最高频两种脏法，
+  旧手写路径两个都放过，新路径两个都 `ValidationError` → 整块拆解被拒 → 回人。
+  恰好复现这次要消灭的「1200 行剩余拆不动的假象」，属"新桥只窄了一格"
+- **验证**：上述用例 + 本机脏 payload 前后对照（改前 2 errors，改后放行且归一化）
+
+### 3. fw-runner/pyproject.toml —— P0-3 加固对 pip 用户不生效
+- **改动**：声明 `pydantic>=2.0,<3` + `json-repair>=0.30,<1`；`split.py` ImportError 分支
+  加 stderr 告警；`llmjson` 的 json_repair try 捕获由 `except Exception` 收窄为 `except ImportError`
+- **为什么**：pydantic 是 llmjson 顶层**硬依赖**却零声明（实测只在开发 venv 手装）→
+  干净环境 `pip install autoknit` 必 ImportError → 静默落回旧手写校验 →
+  **外部用户拿到的是加固前的行为且日志零提示**（"开源后零星问题"的一部分成因在这）。
+  宽捕获另有害：json_repair 自身 SyntaxError 会被误吞成"未安装"，静默丢掉第二层修复能力
+- **验证**：模拟 pydantic 缺失 → 告警打印 + 兼容路径仍返回 `(True, [])`；`tomllib` 解析通过
+
+### 4. fw-runner —— 层③ 协议错误回喂重试（PM台账 #2/#3 的正解，最省 token 的一条路）
+- **改动**：`call_split_agent` 改重试环：协议故障 → 字段级 errors 写进
+  `split-context.json.protocol_errors` → `fw-split.sh` 拼进 SPLIT_TASK.md
+  【上次输出协议错误】段回喂 → 最多 1+N 次（N 默认 2）；新增 runtime 键
+  `split_protocol_retries`（model/config/context/cli/config_cli 五处打通，与 split_exit_threshold 同构）
+- **为什么**：Pydantic 相对手写校验的**唯一增量是字段级精确报错**，不回喂就只是换了句
+  更体面的回人理由。成本口径：一次 flash 回喂 ≪ 一次回人 + executor 从头重入
+  （m05 实测三次重入 ~26 万 token）
+- **验证**：`test_split_v1.py` 新增 8 用例（回喂成功/次数用尽/retries=0/配置生效/env 优先级）
+
+### 5. fw-runner —— 故障分类：SplitInfraError 与协议故障分家（PM台账 #2）
+- **改动**：新增 `SplitInfraError`；`_classify_call_failure` 复用 `drivers.classify_env_error`
+  口径（exit 2 / 缺 fw-spawn / dsh 未就绪 / 限流断网 5xx → infra|upstream）；
+  `runner._do_split` 单独 catch 并 emit `root="infra"` + 排查提示
+- **为什么**：BUG-20260903-A① 的 split 死循环根因是 FW_SPAWN 路径不存在，却被当成
+  "agent 非零退出"一路回人，排查方向整个被带偏。基础设施故障回喂 LLM 一万次也不会自己装上
+- **验证**：`test_split_agent_infra_failure_not_retried` / `..._missing_outcome_is_infra`
+  断言**只调一次**（不浪费回喂）
+
+### 6. fw-runner —— 层②④ 单一实现 + 降级留痕（PM台账 #5/#6，P1-4/P1-5）
+- **改动**：
+  - `fw-split.sh` 提取段优先 `from fw_runner import llmjson`，fw_runner 不可用时才退内联兜底；
+    兜底与主路径产出实测一致
+  - `_normalize_split_json` 收敛为 `llmjson.normalize_split_payload` 的薄包装（原两份逐行等价）
+  - `llmjson` 新增 `loads_llm_with_meta` / `extract_json_objects_with_meta` /
+    `parse_split_payload`（返回 payload+errors+meta），老函数保留为薄包装
+  - `fw-split.sh` spawn 段 `&>/dev/null` → `> tmp/split_spawn.log 2>&1` + 捕获 `SPAWN_RC` 并打印尾部
+  - meta 经 `detail._parse` 透传，`call_split_agent(on_event=...)` → `runner` 送进 `dispatch.jsonl`
+- **为什么**：原先 shell 内嵌一份与 llmjson 语义**已分叉**的提取实现（这边取"最后一个含
+  action"，那边取"第一个过 schema"），多块输出结论不同，端到端修的和单测断的不是同一条链路。
+  spawn 黑洞是那次排障的最大障碍，只修前置检查等于没修
+- **验证**：实跑提取段两条路径（llmjson / 屏蔽 fw_runner 的兜底）→ 捞出的 split 一致，
+  meta `{layer:2, repaired:true, source:...}` 口径一致
+
+### 7. 契约固化
+- **改动**：`llmjson.py` 模块 docstring 写入「四层容错契约」——R1 层②→业务只交接归一化对象、
+  R2 层④只捞结构不猜语义、R3 每层降级必须留痕，外加故障分类口径与**尚未收口清单**
+- **为什么**：这次两个 P0 全是**层间漏**，不是层内 bug。契约不写在代码旁边，下一个人还会漏
+
+### 8. fw-runner —— `run()` 补 `split_driver` 注入（2026-09-04 晚些，Owner定性后修）
+- **改动**：`runner.run()` 新增 `split_driver` 参数，经 `_run_module` → `_do_split` →
+  `call_split_agent(driver=...)` 全链路透传（5 个 `_do_split` 站点）；
+  `fw-split.sh` 找 fw-spawn.py 的候选顺序改为 **显式 env > `${FW1}/fw-runner/bin/` > 相对包根 > 相对自身**，
+  三个候选全落空时分行打印 FW1 与每个候选路径
+- **为什么**（Owner定性：那 5 条测试依赖的"拆分跑不通"是 **BUG-20260903-A① 的现场，不是设计意图**）：
+  `run()` 能注入 `executor_driver` / `auditor_driver`，**唯独 split 不能注入**——split 是三角色里
+  唯一无法替换的，所以测试只能去撞真 `fw-split.sh`：不设 `FW_SPLIT_MODE` 就真起 dsh 烧钱，
+  设成 demo 就拆成功、断言崩。这才是"拆分的方法调用不对"的根子。
+  另：split 是唯一需要**跨目录**找 fw-spawn.py 的角色（脚本在包内 `fw_runner/scripts/`、
+  spawn 与 executor/auditor 在包外 `fw-runner/bin/`），相对路径吃安装布局，换布局就复发
+  "方法根本不存在"——加 FW1 候选（launcher 必带）把这条从"猜布局"变成"问配置"。
+- **配套**：新增 `tests/helpers.py::unavailable_split_driver()`，把"拆分不可用"由**测试自己注入**
+  （exit 2 → 归 infra → 不回喂 → split_failed → 回人），5 个文件 7 处 run() 调用点接入，
+  docstring 里的"缺 fw-split.sh"改为显式前提
+- **验证**：撤掉 `FW_SPLIT_MODE` 裸跑那 5 个文件 **16 passed / 2s / 无 dsh 进程**（改前同条件会真起
+  headless 调用、5 分钟不返回）；相关回归 **172 passed / 20 个测试文件**（三批分次实测 107+16+49，互不重叠；
+  其中 `test_auditor_v1` 单文件要 89s，整批一把跑会顶穿 60s 默认超时线，非卡死）
+- **仍未动**：`FW_SPLIT_MODE` 默认 `dsh` 本身（fw-split.sh:29）。这是产品默认值决策，不是测试问题——
+  现在测试已不依赖它，但贡献者若自己写 e2e 用例仍会默认打真模型，建议 conftest 层加 opt-in 闸门
+
+### 8b. 复查中挖到、**未修**（要Owner/PM定）
+- ~~**5 条测试在当前树不绿**~~ → **已修**（见上条 §8），失败根因与归因过程留档如下：`test_acceptance3_upgrade_chain::test_block_twice_then_switch_then_human`、
+  `test_heartbeat::test_heartbeat_stall_escalates`、`test_root_cause_routing::test_self_root_retries_not_thrown`、
+  `test_progress_snapshot::test_executor_round_error_archives_placeholder`、
+  `test_subprocess_drivers::test_driver_nonzero_exit_routes_to_upgrade`
+  - **归因（已做基线对照）**：用不含本次改动的引擎副本跑同样两条 → **一样红**，
+    故非本次改动引入。根因是这些测试的 docstring 明写「缺 fw-split.sh → split_failed → 回人」——
+    它们把"拆分跑不通"当**环境巧合**前提；BUG-20260903-A① 把 fw-split.sh 修好之后，前提不成立
+  - 表现分裂：不设 `FW_SPLIT_MODE=demo` 时它们**真起 dsh 调模型**（实测挂 5 分钟、烧真 token）；
+    设了 demo 则拆分真成功 → 轮次/根因断言崩
+  - 建议方向（未拍板不动）：把"拆分不可用"写成显式前提（如 monkeypatch `FW_SPLIT_SCRIPT` 指向不存在路径），
+    或反过来更新断言接受"拆分成"的新事实——**二选一取决于这些用例本来想守什么**
+- **`FW_SPLIT_MODE` 默认 `dsh`（fw-split.sh:29）**：贡献者 clone 后直接 `pytest tests/` 会
+  对真实模型发起调用（`--timeout 300`），既烧钱又随网络抖动 flaky。开源仓应在 conftest 里
+  默认 `demo`、真调用改 `FW_TESTS_ALLOW_LLM=1` 显式开启，并在 CONTRIBUTING/README 写明
+- **私有仓 CHANGELOG 曾停在 2026-08-23**：08-24→09-04 的代码变更（含PM本次 llmjson 改造）
+  未进本台账，与开源仓 CHANGELOG 存在双源漂移。本次已补 2026-09-04 节
+
+### 9. llmjson —— P0-4 缺失 remaining_after 被默认成 0（**静默丢活**，Owner追问阈值时挖出）
+- **改动**：`SplitJSON` 加 `@model_validator(mode="before")`——`action=split` 时 `remaining_after`
+  **必须存在**，收尾块也要显式写 `{"scope": "", "estimate_lines": 0}`；另把字段改为
+  `Optional[RemainingAfter] = None` + before-validator 把"写了 null/{}"补成默认（区分"没写"与"写 0"）
+- **为什么**：旧手写校验的 `REQUIRED_TOP` 含 `remaining_after`，漏写 → 缺少必需字段 → 回人（响亮失败）。
+  Pydantic 迁移时该字段带了 `RemainingAfter()` 默认值 → 漏写被**静默补成 estimate_lines=0**
+  → 这个 0 写进子模块 `remaining_estimate` → 出口判定读到 0 → **子模块做完首发块直接 done，
+  父模块剩下的活凭空消失，且全绿零报错**。比"回人"严重一档：它以为自己完成了
+- **验证**：`test_missing_remaining_after_rejected_not_defaulted`（拒 + 不改原数据）、
+  `test_explicit_zero_remaining_still_accepted`（显式收尾块仍放行）；引擎副本实测 `validate → False`；
+  `build_wrapup_split_json` 程序化收尾块本来就显式写 0，不受影响
+
+### 10. llmjson —— 截断修复做成真的（连带一条**假绿测试**归位）
+- **改动**：`extract_json_objects_with_meta` 遇到未闭合尾巴时，把整段尾巴交给 json_repair 补全，
+  结果追加到候选末尾（`prefer="last"` 时即 agent 终稿），并留痕 `salvaged_truncated=True`
+- **为什么**：原实现只把**闭合**的子串喂给 repair，外层被截断就不是候选 → 只能捞到内层碎片。
+  `test_parse_split_json_end_to_end_dirty_text` 声称"截断修复成功"，实际捞的是内层碎片 +
+  默认值补 0 冒充合法拆解——**P0-4 的默认值一取消，这条假绿立刻现形**（两个 bug 互相遮掩）
+- **验证**：该测试补上三条"完整性"硬断言（next_block / estimate_lines=900 / dependency_map），
+  另加 `test_truncated_salvage_is_recorded_in_meta`；实测完整对象被恢复、剩余 900 行未丢
+
+### 11. fw-runner —— 升级链判定重写：计数只管"人卡住"，不管"活没干完"（2026-09-04 Owner拍板）
+- **背景**：Owner定的规则是「同一个执行者连续两次做**同样的任务**不成功 → 上升给人」，
+  但他担心这条"两次"会误伤递归拆分。核查确认**担心成立**：`route_partial` 把
+  `partial_count >= max_partial_rounds` 写在剩余量判断**前面**，且 `partial_count`
+  只增不清零、换 executor 也不清 → "续做失败说明这块看着小实际大、该叫 split 继续拆"
+  这条设计路径**永远走不到**（第二次 partial 一律回人）。该 bug **零测试覆盖**
+  （既有 route_partial 用例每个都新建 state、只调一次，所以它能活到今天）
+- **改动（upgrade.route_partial 重写）**：
+  1. **剩余 > 阈值 → 先 SPLIT，不看任何次数**（剩太多是块太大，不是人不行）
+  2. 回人只由**同因零进展连续**触发：新增 `ModuleAgentState.no_progress_streak` +
+     `last_remaining_sig`（剩余清单指纹）——清单变了=有进展→重新计数；一致=同因→+1；
+     连续到 `max_partial_rounds` 才回人。这才对上Owner原话里的"**同因**打回"
+  3. `switch_executor` 换人时清零 `no_progress_streak`/`last_remaining_sig`
+     ——失败额度跟人走，新 executor 不背前任的账（旧实现只清 block/stall）
+  4. `partial_count` 语义**保持不变**（`should_merge_back` 仍按累计次数判，未受影响）
+- **配套：任务级失控闸**（新增 runtime 键 `split_max_total`，默认 30，五处打通 + `--split-max-total`）
+  - 为什么现在必须有：`cfg.split_max_depth=2` 的真实语义是"**每个模块各自**能拆 2 次"
+    （子模块 state 全新、depth 从 0 起），**不是**"整棵树最多 2 层"——`model.py:125` 那句
+    注释是错的，树深实际没有上限。本次把"剩太多就先拆"放开后失控递归风险上升，
+    故在 `_do_split` 入口加 `len(ctx.modules) >= split_max_total` 兜底，超限直接失败回人
+    （**不调 split agent，不白花一次 flash**）。已把 `split_max_depth` 的注释改成说实话
+- **测试**：新增 8 条（同因两次→回人 / 有进展不回人 / ★第二次 partial 且剩余更多→SPLIT /
+  每模块额度用尽→回人 / streak 与 count 分离 / 换人清额度 / checkpoint 往返保住新字段 /
+  split_max_total 拦停且不调 agent）
+- **顺带根治 N2**：`test_exit_gate.py`、`test_progress_handover.py` 也在靠"环境恰好跑不通拆分"
+  过活（不设 `FW_SPLIT_MODE` 会真起 dsh——实测跑到 `test_switch_carries_previous_progress`
+  时又拉起真 spawn，已精确 PID 收掉）。与前述 5 条一起，共 **7 个测试文件 10 处** run()
+  调用改为显式注入 `unavailable_split_driver()`
+- **验证**：`pytest tests/`（除 `test_auditor_v1`）rc=0、**228 passed**；`test_auditor_v1`
+  另跑 **8 passed** → 合计 **236 passed**。全程 `pgrep fw-spawn` 为空
+  （改前同条件会真调模型、单文件挂 5 分钟以上）

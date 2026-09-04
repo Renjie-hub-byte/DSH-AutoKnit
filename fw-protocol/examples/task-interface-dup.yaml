@@ -2,7 +2,7 @@
 # 预期：fw-protocol 报 interface_duplicate 错误，指出两个模块与共享方法（exit 1）
 task:
   name: 示例-接口重复
-  owner: 小理
+  owner: PM
 modules:
   - id: m01
     name: 订单写入A

@@ -58,12 +58,15 @@ class RunConfig:
     retry_before_switch: int = 2
     max_executor_switches: int = 1
     enable_split: bool = True           # 是否启用自动拆分（v1.0）
-    split_max_depth: int = 2            # 最大拆分深度，防无限递归
+    split_max_depth: int = 2            # ⚠️ 语义更正（2026-09-04 小澈复查）：**每个模块各自**可拆 N 次，
+                                        #    不是"整棵树最多 N 层"（子模块 state 全新，split_depth 从 0 起）
+    split_max_total: int = 30           # 任务级兜底闸：全流程模块总数（planner 拆的 + split 生的）上限，防失控递归
     split_min_deliverables: int = 2     # 交付物 ≤ N 的不拆（已是叶子）
     retry_remaining_threshold: int = 2  # 剩余交付物 ≤ N 项 → 续做；>N → split（v2 贪心判定，partial 粒度）
-    split_exit_threshold: int = 1000    # 出口判定（杰哥 2026-08-26 拍板试点）：剩余行数 ≤ N → 收官/final 续做，>N → split
+    split_exit_threshold: int = 1000    # 出口判定（Owner 2026-08-26 拍板试点）：剩余行数 ≤ N → 收官/final 续做，>N → split
+    split_protocol_retries: int = 2     # 层③（2026-09-04 小澈复查）：拆解协议故障回喂 LLM 的重试次数，总尝试=1+本值；0=不回喂
     audit_require_evidence: bool = True  # BUG-002a（2026-08-25）：auditor pass 必须带证据等级（L1/L2），L3 无实证 → 回人
-    max_partial_rounds: int = 2         # 连续 partial 超 N 次 → 回人（杰哥 20260902：同因打回 1 次重试，第 2 次回人；结构性不可达靠重试无意义）
+    max_partial_rounds: int = 2         # 连续 partial 超 N 次 → 回人（Owner 20260902：同因打回 1 次重试，第 2 次回人；结构性不可达靠重试无意义）
     split_merge_after_fails: int = 3    # 子模块连续失败次数达阈值合并回父
     enable_fallback_model: bool = True  # 是否启用 pro 兜底
     fallback_model: str = "pro"         # 兜底模型（仅当前叶子模块）
@@ -83,9 +86,11 @@ class RunConfig:
             "max_executor_switches": self.max_executor_switches,
             "enable_split": self.enable_split,
             "split_max_depth": self.split_max_depth,
+            "split_max_total": self.split_max_total,
             "split_min_deliverables": self.split_min_deliverables,
             "retry_remaining_threshold": self.retry_remaining_threshold,
             "split_exit_threshold": self.split_exit_threshold,
+            "split_protocol_retries": self.split_protocol_retries,
             "audit_require_evidence": self.audit_require_evidence,
             "max_partial_rounds": self.max_partial_rounds,
             "split_merge_after_fails": self.split_merge_after_fails,
@@ -120,10 +125,12 @@ class ModuleAgentState:
     root: str = ""                   # 最近判定根因：self|upstream|contract|stall|agent_error
     reason: str = ""                 # 最近判定原因文本
     last_verdict: str = ""           # pass | partial | block
-    split_depth: int = 0             # 拆分深度（顶层=0，每拆一层 +1）
+    split_depth: int = 0             # 本模块已拆分次数（⚠️ 每个模块各自计数，非整棵树深度，见 cfg.split_max_depth）
     parent_module: str = ""          # 父模块 id（顶层模块为空）
     child_modules: List[str] = field(default_factory=list)  # 子模块 id 列表
-    partial_count: int = 0           # 连续 partial 次数（可逆用）
+    partial_count: int = 0           # 累计 partial 次数（子模块合并回父的判据 split_merge_after_fails）
+    no_progress_streak: int = 0      # 🆕 同因零进展连续次数（回人的唯一 partial 判据，Owner 20260904）
+    last_remaining_sig: str = ""     # 🆕 上一轮剩余清单指纹（判"还是不是同一件事"）
     aggregated: bool = False         # 是否已聚合收敛
     model_tier: int = 0              # 当前模型档位（0=flash, 1=pro）
     tokens_used: int = 0             # BUG-004：本模块累计 token 消耗（executor+auditor 各轮回填）
@@ -147,6 +154,8 @@ class ModuleAgentState:
             "parent_module": self.parent_module,
             "child_modules": list(self.child_modules),
             "partial_count": self.partial_count,
+            "no_progress_streak": self.no_progress_streak,
+            "last_remaining_sig": self.last_remaining_sig,
             "aggregated": self.aggregated,
             "model_tier": self.model_tier,
             "tokens_used": self.tokens_used,
@@ -160,10 +169,11 @@ class ModuleAgentState:
         s = cls()
         for k in ("executor_round", "auditor_round", "executor_switches",
                   "block_count", "block_total", "stall_count",
-                  "split_depth", "partial_count", "model_tier"):
+                  "split_depth", "partial_count", "no_progress_streak", "model_tier"):
             if isinstance(d.get(k), int):
                 setattr(s, k, d[k])
         s.executor_id = str(d.get("executor_id") or "")
+        s.last_remaining_sig = str(d.get("last_remaining_sig") or "")
         s.parent_module = str(d.get("parent_module") or "")
         if isinstance(d.get("child_modules"), list):
             s.child_modules = [str(x) for x in d["child_modules"]]

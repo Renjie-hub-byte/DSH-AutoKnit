@@ -54,6 +54,18 @@ class SplitCallError(Exception):
     """调 split agent 失败（非零退出 / 中断 / 无拆解产物）。"""
 
 
+class SplitInfraError(SplitCallError):
+    """基础设施/配置故障（2026-09-04 小澈复查 P1-6）：dsh 未就绪、缺 fw-spawn.py、
+    模式非法、脚本没落 outcome 产物——**我们没把工具装好**，不是模型拆不出来。
+
+    与协议故障（SplitJSONError）分开归因：
+      * 协议故障 → 层③回喂 LLM 重试（便宜，一次 flash）
+      * 基础设施故障 → 不回喂（回喂一万次 dsh 也不会自己装上），直接快失败并给出真实根因
+    历史教训：BUG-20260903-A① 的 split 死循环，根因就是 FW_SPAWN 路径不存在，
+    却被当成「agent 非零退出」一路回人，排查方向整个被带偏。
+    """
+
+
 class SplitJSONError(Exception):
     """拆解 JSON 不符合协议（缺失字段 / 字段非法）。"""
 
@@ -61,7 +73,7 @@ class SplitJSONError(Exception):
 class CannotSplitError(SplitJSONError):
     """split agent 判定剩余一轮能完（action=cannot_split 兜底路径）。
 
-    2026-08-28 语义定稿（杰哥决策）：**小程序剩余不进 cannot_split——提示词只教
+    2026-08-28 语义定稿（Owner决策）：**小程序剩余不进 cannot_split——提示词只教
     split+收尾块。** cannot_split 存留为模型乱输出的兜底：runner 捕获后由程序
     生成「收尾块」（next_block=剩余全量）下放，不回人、不丢活、不回原 executor 续做。"""
 
@@ -87,6 +99,12 @@ def validate_split_json(data: Any) -> Tuple[bool, List[str]]:
     返回 (ok, errors)。action=cannot_split → (False, [reason])（runner 程序化转收尾块，不硬拆）。
     合法拆解：action == "split"，且 next_block 一块字段齐全。
     remaining_after 允许为空（收尾块语义：remaining_after 空 scope/0 行 = 最后一块，做完即 done）。
+
+    BUG-20260903 改造：内部委托 llmjson.SplitJSON（Pydantic）——类型 coercion
+    （"1800"→1800、900.0→900、顿号串→列表）+ 字段级精确报错。
+    ⚠️ llmjson.normalize_split_payload **未接入本链路**（提取/归一化仍在 fw-split.sh
+    的 _extract + 本文件 _normalize_split_json 里，两套实现语义已分叉，见复查报告 P1-5）。
+    pydantic 缺库时自动降级回旧手写校验（行为不劣于改造前）。
     """
     errors: List[str] = []
     if not isinstance(data, dict):
@@ -95,7 +113,34 @@ def validate_split_json(data: Any) -> Tuple[bool, List[str]]:
     if action == "cannot_split":
         return False, [f"cannot_split: {data.get('reason') or '模块剩余一轮能完（程序转收尾块下放）'}"]
     if action != "split":
+        # 前置检查（兼容旧文案）：Pydantic Literal 报错对人不友好，action 错误单独给话术
         return False, [f"action 必须是 'split' 或 'cannot_split'，收到 {action!r}"]
+    # Pydantic 主路径（pydantic 缺库时 ImportError → 落回底部旧手写校验，行为不劣于改造前）
+    # ⚠️ 注意本函数**会原地修正 data**（P0-1，2026-09-04 小澈复查）：coercion 结果必须
+    #   写回下游真正读取的那份 dict。原先只 `model_validate()` 判断放行就丢弃 model，
+    #   而 call_split_agent / scaffold_children / _build_child_module_dict 读的是原始
+    #   dict → 顿号串 deliverables 过校验后仍被 `[str(x) for x in <str>]` 按**字符**
+    #   迭代，子模块 deliverables/acceptance 炸成单字条目（silent corruption，比原先
+    #   isinstance(list) 直接拒更坏）。降级路径不改数据，行为与改造前一致。
+    try:
+        from .llmjson import SplitJSON
+        # 先在校验副本上跑 model_validate，成功才原地替换（失败时 data 原样保留，可降级/报错）
+        normalized = SplitJSON.model_validate({**data}).model_dump()
+        data.clear()
+        data.update(normalized)
+        return True, []
+    except ImportError:
+        import sys
+        print("[llmjson] pydantic 不可用 → split 校验走兼容路径（本次加固未生效）",
+              file=sys.stderr)
+    except Exception as exc:
+        # ValidationError / 其他 → 转人话 errors（保留旧协议关键字段提示）
+        for k in REQUIRED_TOP:
+            if k not in data:
+                errors.append(f"缺少必需字段: {k}")
+        errors.append(f"拆解 JSON 协议校验失败: {exc}")
+        return False, errors
+    # pydantic 缺库降级路径（llmjson 导入成功但 pydantic 缺失时 SplitJSON 会抛 ImportError）
     for k in REQUIRED_TOP:
         if k not in data:
             errors.append(f"缺少必需字段: {k}")
@@ -166,7 +211,7 @@ def _scan_src_files(spec: ModuleSpec) -> List[str]:
 def build_wrapup_split_json(ctx: TaskContext, mid: str, context: Mapping[str, Any]) -> Dict[str, Any]:
     """程序化构造「单块」拆解 JSON（cannot_split 兜底，2026-08-28）。
 
-    语义（杰哥定稿）：剩余工作不管多小，都拆成**一块**下放给新 executor 一次做完——
+    语义（Owner定稿）：剩余工作不管多小，都拆成**一块**下放给新 executor 一次做完——
     不回原 executor 续做、不回人、不丢活。next_block = 剩余全量，remaining_after 空。
     deliverables 优先级：auditor remaining_items → REVIEW 待办 → 剩余 scope 兜底。
     """
@@ -224,6 +269,17 @@ def _audit_mapping(audit: Any) -> Dict[str, Any]:
     }
 
 
+def _dynamic_remaining(stat_lines: Any, n_done: int, n_todo: int) -> Tuple[Any, str]:
+    """M1（7a）：剩余量动态衰减。静态总量 ×（待办 / 已完成+待办），done 增长 → 递减。
+
+    返回 (lines, source)。静态值缺失/非法时原样返回并标 static_fallback（R3 留痕）。
+    """
+    if isinstance(stat_lines, int) and not isinstance(stat_lines, bool) and stat_lines > 0 \
+            and (n_done + n_todo) > 0:
+        return max(1, round(stat_lines * n_todo / (n_done + n_todo))), "review_dynamic"
+    return stat_lines, "static_fallback"
+
+
 def collect_split_context(ctx: TaskContext, state: RunState, mid: str,
                           audit: Any = None) -> Dict[str, Any]:
     """D1：收集 split agent 的 5 项输入（设计文档第五节）。
@@ -246,19 +302,30 @@ def collect_split_context(ctx: TaskContext, state: RunState, mid: str,
         review_kv = dict(doc.kv)
         review_done = [_clean_done(ln) for ln in doc.list_done() if "（占位）" not in ln]
         review_todo = [_clean_todo(ln) for ln in doc.list_todo() if "（占位）" not in ln]
-    if audit is None and review_kv:
+    audit_missing = audit is None
+    if audit_missing and review_kv:
         audit = {
             "passed_count": int(review_kv.get("passed_count") or 0),
             "total_count": int(review_kv.get("total_count") or 0),
             "remaining_items": _split_remaining(review_kv.get("remaining_items", "")),
         }
     audit_map = _audit_mapping(audit)
+    # U2（BUG-20260904）：崩溃/卡死路径 _do_split 传 aout=None——auditor 没跑成，
+    # 剩余量要么从 REVIEW 二手兜底、要么纯占位 0。占位 0 会冒充"快完了"误导
+    # split agent（闭眼拆，交接文档 §6-U2）。显式标记 unknown（注意在 REVIEW
+    # 兜底填充之前捕获），层① 提示词据此保守拆分；真实 auditor outcome 为 False。
+    remaining_unknown = audit_missing
     # 总目标层（v2：split 拆下一块时要带"总的"上下文，next_block.objective 含总目标定位）
     task_meta = dict(ctx.effective.get("task") or {})
     pb = dict(task_meta.get("prediction_baseline") or {})
     parent_rem = dict(mod.get("remaining_estimate") or {}) if (
         mod := next((m for m in (ctx.effective.get("modules") or [])
                      if isinstance(m, dict) and m.get("id") == mid), None)) else {}
+    # M1（BUG-20260904-D，7a）：剩余量动态化。静态 estimate_lines（planner 一次性给的
+    # 整模块量级）从不随块完成递减——script2video m05 拆分死循环诱因之一。改为以
+    # REVIEW 的 done/todo 条目数为动态事实源按占比衰减（_dynamic_remaining）。
+    dyn_lines, dyn_source = _dynamic_remaining(
+        parent_rem.get("estimate_lines"), len(review_done), len(review_todo))
     return {
         "mid": mid,
         "parent_module": mid,
@@ -266,11 +333,15 @@ def collect_split_context(ctx: TaskContext, state: RunState, mid: str,
         "task_goal": str(task_meta.get("goal") or ""),
         "will_not_have": [str(x) for x in (pb.get("will_not_have") or [])],
         "module_remaining": {
-            "scope": str(parent_rem.get("scope") or ""),
-            "estimate_lines": parent_rem.get("estimate_lines"),
+            "scope": "; ".join(review_todo) if review_todo else str(parent_rem.get("scope") or ""),
+            "estimate_lines": dyn_lines,
+            "source": dyn_source,          # R3：动态/静态留痕
+            "review_done_count": len(review_done),
+            "review_todo_count": len(review_todo),
         },
         "deliverables": _read_deliverables(ctx, mid),           # 完整清单（含未勾选）
         "audit": audit_map,                                     # auditor 最近判定
+        "remaining_unknown": remaining_unknown,                 # U2：audit 缺席=剩余量不可信
         "passed_count": audit_map["passed_count"],
         "total_count": audit_map["total_count"],
         "remaining_items": audit_map["remaining_items"],
@@ -308,7 +379,18 @@ def _normalize_split_json(sj: Optional[Dict[str, Any]], mid: str) -> Optional[Di
     拆不动的假象）。这里自动：
       1) 裸 next_block（有 id 无 action）→ 包成 {action:split, parent_module:mid, next_block}
       2) 内层 remaining_after / dependency_map / context_from_parent 提升到顶层
+
+    2026-09-04（小澈复查 P1-5）：实现已收敛到 llmjson.normalize_split_payload ——
+    原先本函数与那份逐行等价，两份并存改一处漏一处。此处保留同名薄包装，
+    只为兼容既有调用点/测试；**新代码一律用 llmjson 那份**。
+    pydantic 缺库时 llmjson 不可导入 → 退回本函数内联兜底（行为不劣于改造前）。
     """
+    try:
+        from .llmjson import normalize_split_payload
+    except ImportError:
+        pass
+    else:
+        return normalize_split_payload(sj, mid)
     if not isinstance(sj, dict):
         return sj
     if "action" not in sj and isinstance(sj.get("id"), str):
@@ -318,8 +400,66 @@ def _normalize_split_json(sj: Optional[Dict[str, Any]], mid: str) -> Optional[Di
     if isinstance(nb, dict):
         for k in ("remaining_after", "dependency_map", "context_from_parent"):
             if k not in sj and k in nb:
-                sj[k] = nb.pop(k) if isinstance(nb, dict) else nb[k]
+                sj[k] = nb.pop(k)
     return sj
+
+
+# 拆解协议故障的层③回喂次数（总尝试 = 1 + 本值）。默认 2 → 最多 3 次，
+# 与Owner定的四层容错图一致；成本口径：一次 flash 回喂 ≪ 一次回人 + executor 重入
+# （m05 实测三次重入 ~26 万 token）。优先级见 _resolve_protocol_retries。
+DEFAULT_SPLIT_PROTOCOL_RETRIES = 2
+
+
+def _resolve_protocol_retries(ctx: TaskContext, explicit: Optional[int] = None) -> int:
+    """层③回喂次数取值：显式参数 > 配置三通道(任务书 runtime / dflow.yaml / CLI) > env > 默认 2。
+
+    三通道在 config.resolve_combined 里已合并成 RunConfig.overrides，所以这里查 overrides
+    而不是查字段本身——字段永远有默认值，拿它当"是否被配置过"会让 env 通道变成死代码
+    （小澈第一版就是这么写的，被自己的测试抓出来）。
+    env 在调用时读而非 import 时读，避免子进程/测试改环境变量不生效。
+    """
+    raw = explicit
+    if raw is None:
+        overrides = getattr(getattr(ctx, "config", None), "overrides", None) or {}
+        raw = overrides.get("split_protocol_retries")
+    if raw is None:
+        raw = os.environ.get("FW_SPLIT_PROTOCOL_RETRIES")
+    if raw is None:
+        raw = getattr(getattr(ctx, "config", None), "split_protocol_retries",
+                      DEFAULT_SPLIT_PROTOCOL_RETRIES)
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        val = DEFAULT_SPLIT_PROTOCOL_RETRIES
+    if val < 0:
+        val = 0        # 负数无意义：按"不回喂，一次定生死"处理，别悄悄变成多次调用
+    return val
+
+
+# 判定"这是我们的环境问题，不是模型问题"的硬特征（fw-split.sh 的前置检查段用 exit 2）
+_INFRA_HINTS = ("fw-spawn", "dsh 未就绪", "未知模式", "no such file",
+                "permission denied", "command not found")
+
+
+def _classify_call_failure(aout: DriverOutcome) -> str:
+    """driver 失败归因：infra | upstream | ''（''=按协议/未知故障处理）。
+
+    复用 drivers.classify_env_error 的口径（限流/断网/5xx → upstream），
+    不另起一套分类器（PM台账 #2 的修法）。
+    """
+    detail = aout.detail if isinstance(aout.detail, dict) else {}
+    exit_code = detail.get("exit")
+    text = " ".join(str(x) for x in (aout.reason, detail.get("stderr", "")) if x)
+    if exit_code == 2 or any(h in text.lower() or h in text for h in _INFRA_HINTS):
+        return "infra"
+    try:
+        from .drivers import classify_env_error
+        if classify_env_error(text, int(exit_code or 0)) == "upstream":
+            return "upstream"
+    except Exception:   # 分类器本身不可用不该拖垮归因（归因失败＝按未知处理）
+        pass
+    return ""
+
 
 
 def _extract_split_json(module: ModuleSpec, aout: DriverOutcome) -> Optional[Dict[str, Any]]:
@@ -353,17 +493,27 @@ def _default_split_driver(ctx: TaskContext, env: Optional[Dict[str, str]] = None
 
 
 def call_split_agent(ctx: TaskContext, mid: str, context: Mapping[str, Any],
-                     driver: Any = None) -> Dict[str, Any]:
-    """D2：调 split agent（DSH flash，一次性），返回校验通过的拆解 JSON。
+                     driver: Any = None, on_event: Any = None,
+                     retries: Optional[int] = None) -> Dict[str, Any]:
+    """D2：调 split agent（DSH flash），返回**归一化后**的拆解 JSON。
 
-    - 收集到的 5 项输入先落 tmp/split-context.json（喂给 bin/fw-split.sh，E 轮拼指令）
+    - 收集到的 5 项输入先落 tmp/split-context.json（喂给 scripts/fw-split.sh，E 轮拼指令）
     - 复用 ScriptedAgentDriver 契约（role=split → 读 tmp/split-outcome.json）
     - 拆解 JSON 校验（validate_split_json）：缺失字段 / cannot_split → SplitJSONError
+
+    四层容错契约的落点（2026-09-04 小澈复查，Owner拍板）：
+      层② 结构校验 → 本函数只认 validate_split_json 写回的归一化对象，不回头读原始脏数据
+      层③ 协议故障 → 把字段级 errors 写进 split-context.json 的 protocol_errors，
+                    fw-split.sh 会把它拼进 SPLIT_TASK.md 的【上次输出协议错误】段回喂 LLM，
+                    最多重试 DEFAULT_SPLIT_PROTOCOL_RETRIES 次（一次 flash，远便宜于回人重入）
+      层④ 降级标记 → fw-split.sh 在 outcome 里带 detail._parse（layer/repaired/truncated），
+                    每次尝试都通过 on_event 送进事件流，降级不再静默（P0-3 教训）
+      基础设施故障 → SplitInfraError 快失败，不回喂（回喂一万次 dsh 也不会自己装上）
+
+    on_event: 可选回调 fn(kind: str, detail: dict)，由 runner 传入对接 EventLog。
     """
     module = ctx.modules[mid]
     split_dir = module.dir / "tmp"
-    atomic_write_text(split_dir / "split-context.json",
-                      json.dumps(dict(context), ensure_ascii=False, indent=2))
     # FW_SPLIT_MODEL 必须是真实模型名：model_tiers 是档位名（flash/pro，非可调用模型），
     # 用它覆盖会写坏 model-patch.yml。split agent 固定 flash → 注入真实模型名 DEFAULT_SPLIT_MODEL。
     # ⚠️ 必须继承 os.environ（含 PATH/DSH_HOME），否则 fw-split.sh 里 python3 等命令找不到 → 退出码 1
@@ -373,23 +523,59 @@ def call_split_agent(ctx: TaskContext, mid: str, context: Mapping[str, Any],
     env.setdefault("FW_SPLIT_PROMPT", str(_SPLIT_PROMPT))
     if driver is None:
         driver = _default_split_driver(ctx, env=env)
-    actx = AgentContext(
-        module=module, run_id="", role=SPLIT_ROLE, round_no=1,
-        executor_id=SPLIT_ROLE, task_root=ctx.task_root, mode=ctx.config.mode, env=env,
-    )
-    aout = driver.run_round(actx)
-    if aout.status != "ok":
-        raise SplitCallError(f"split agent 调用失败(status={aout.status}): {aout.reason}")
-    split_json = _extract_split_json(module, aout)
-    if split_json is None:
-        raise SplitCallError(f"split agent 无拆解产物（缺 {SPLIT_OUTCOME_REL} / detail.split）")
-    if isinstance(split_json, dict) and split_json.get("action") == "cannot_split":
-        # 业务分支（2026-08-28）：剩余收尾量级 → CannotSplitError，runner 程序化生成单块下放
-        raise CannotSplitError(str(split_json.get("reason") or "剩余一轮可完，程序化单块下放"))
-    ok, errors = validate_split_json(split_json)
-    if not ok:
-        raise SplitJSONError("; ".join(errors))
-    return split_json
+
+    def _emit(kind: str, detail: Dict[str, Any]) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event(kind, detail)
+        except Exception:      # 留痕失败不能影响拆解主流程（观测性让位于正确性）
+            pass
+
+    attempts = 1 + _resolve_protocol_retries(ctx, retries)
+    last_errors: List[str] = []
+    for attempt in range(1, attempts + 1):
+        payload = dict(context)
+        if last_errors:
+            payload["protocol_errors"] = list(last_errors)      # 层③回喂正文
+            payload["protocol_attempt"] = attempt
+        atomic_write_text(split_dir / "split-context.json",
+                          json.dumps(payload, ensure_ascii=False, indent=2))
+        actx = AgentContext(
+            module=module, run_id="", role=SPLIT_ROLE, round_no=attempt,
+            executor_id=SPLIT_ROLE, task_root=ctx.task_root, mode=ctx.config.mode, env=env,
+        )
+        aout = driver.run_round(actx)
+        if aout.status != "ok":
+            kind = _classify_call_failure(aout)
+            if kind:
+                label = "基础设施" if kind == "infra" else "上游服务"
+                raise SplitInfraError(
+                    f"split 调用{label}故障(status={aout.status}): {aout.reason}") from None
+            raise SplitCallError(f"split agent 调用失败(status={aout.status}): {aout.reason}")
+        split_json = _extract_split_json(module, aout)
+        if split_json is None:
+            # exit 0 但没落产物 = 脚本/环境问题，不是模型输出不合规，不回喂
+            raise SplitInfraError(
+                f"split agent 无拆解产物（缺 {SPLIT_OUTCOME_REL} / detail.split）——"
+                f"检查 {module.dir / 'tmp' / 'split_spawn.log'}")
+        detail = aout.detail if isinstance(aout.detail, dict) else {}
+        parse_meta = detail.get("_parse") if isinstance(detail.get("_parse"), dict) else {}
+        if split_json.get("action") == "cannot_split":
+            # 业务分支（2026-08-28）：剩余收尾量级 → CannotSplitError，runner 程序化生成单块下放
+            _emit("split.parse", {"module": mid, "attempt": attempt, "action": "cannot_split",
+                                  **parse_meta})
+            raise CannotSplitError(str(split_json.get("reason") or "剩余一轮可完，程序化单块下放"))
+        ok, errors = validate_split_json(split_json)
+        if ok:
+            _emit("split.parse", {"module": mid, "attempt": attempt, "action": "split",
+                                  "retries_used": attempt - 1, **parse_meta})
+            return split_json
+        last_errors = list(errors)
+        _emit("split.protocol_retry" if attempt < attempts else "split.protocol_exhausted",
+              {"module": mid, "attempt": attempt, "errors": last_errors, **parse_meta})
+    raise SplitJSONError(
+        f"拆解 JSON 协议校验连续 {attempts} 次失败（已回喂 LLM 修正）: " + "; ".join(last_errors))
 
 
 def _resolve_child_deps(ctx: TaskContext, mid: str, dep_map: Mapping[str, Any],

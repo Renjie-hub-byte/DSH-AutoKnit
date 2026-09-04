@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: fw-budget
+Version: 1.0.0
+Summary: 预算闸门模块（需求5）：70% 预警/100% 硬停/单模块上限/加预算 resume/放弃归档
+Requires-Python: >=3.11

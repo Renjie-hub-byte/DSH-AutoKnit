@@ -27,6 +27,8 @@ _RUNTIME_TO_FLAG = {
     "split_exit_threshold": "--split-exit-threshold",
     "retry_remaining_threshold": "--retry-remaining-threshold",
     "split_max_depth": "--split-max-depth",
+    "split_max_total": "--split-max-total",
+    "split_protocol_retries": "--split-protocol-retries",
     "end_gate": "--end-gate",
 }
 _BOOL_FLAGS = {

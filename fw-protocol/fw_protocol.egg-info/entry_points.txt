@@ -1,0 +1,2 @@
+[console_scripts]
+fw-protocol = fw_protocol.cli:main

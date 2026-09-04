@@ -43,7 +43,7 @@ from .upgrade import (
 )
 from .human import apply_human_answers, human_escalate
 from .split import (
-    CannotSplitError, build_wrapup_split_json, call_split_agent,
+    CannotSplitError, SplitInfraError, build_wrapup_split_json, call_split_agent,
     collect_split_context, generate_shared_context, insert_children_into_order,
     scaffold_children,
 )
@@ -167,6 +167,7 @@ def run(task_root: str | Path,
         resume: bool = False,
         executor_driver: Optional[AgentDriver] = None,
         auditor_driver: Optional[AgentDriver] = None,
+        split_driver: Optional[AgentDriver] = None,
         budget_gate: Optional[BudgetGate] = None,
         integration_hook: Optional[IntegrationHook] = None,
         run_id: Optional[str] = None,
@@ -259,7 +260,8 @@ def run(task_root: str | Path,
             if not batch:
                 break   # 剩余全部为 split 容器 / needs_human，无法推进
             workers = [lambda mid=mid: _run_module(ctx, state, mid, executor_driver,
-                                                   auditor_driver, cfg, budget, event_log)
+                                                   auditor_driver, cfg, budget, event_log,
+                                                   split_driver=split_driver)
                        for mid in batch]
             results = run_parallel(workers, max_concurrency=cfg.max_parallel)
             for mid, outcome in zip(batch, results):
@@ -320,8 +322,14 @@ def run(task_root: str | Path,
 
 def _run_module(ctx: TaskContext, state: RunState, mid: str,
                 executor_driver: Optional[AgentDriver], auditor_driver: Optional[AgentDriver],
-                cfg: RunConfig, budget: BudgetGate, events: EventLog) -> str:
-    """单模块完整生命周期（executor 轮 → auditor → 升级链 → 心跳）。返回 done|human。"""
+                cfg: RunConfig, budget: BudgetGate, events: EventLog,
+                split_driver: Optional[AgentDriver] = None) -> str:
+    """单模块完整生命周期（executor 轮 → auditor → 升级链 → 心跳）。返回 done|human。
+
+    split_driver 默认 None → 由 call_split_agent 走包内默认驱动（真调 fw-split.sh）。
+    ⚠️ 与 executor/auditor 对称，2026-09-04 补：以前 split 注入不了，单测只能去撞真脚本
+    → 真 dsh 调用（默认 FW_SPLIT_MODE=dsh），既烧钱又随网络 flaky。
+    """
     spec = ctx.modules[mid]
     astate = state.ensure(mid)
     if not astate.started_at:
@@ -430,7 +438,7 @@ def _run_module(ctx: TaskContext, state: RunState, mid: str,
             if action == SWITCH:
                 switch_executor(ctx, state, mid, events, reason=outcome.reason or "agent_error")
             if action == SPLIT:
-                result = _do_split(ctx, state, mid, events, None)
+                result = _do_split(ctx, state, mid, events, None, split_driver=split_driver)
                 if result == "split_ok":
                     return DONE
                 astate.reason = (outcome.reason or "agent_error") + "：模块无法拆分"
@@ -459,7 +467,7 @@ def _run_module(ctx: TaskContext, state: RunState, mid: str,
                 switch_executor(ctx, state, mid, events,
                                 reason=f"心跳守护：连续{cfg.heartbeat_n_rounds}轮无实质产出")
             if action == SPLIT:
-                result = _do_split(ctx, state, mid, events, None)
+                result = _do_split(ctx, state, mid, events, None, split_driver=split_driver)
                 if result == "split_ok":
                     return DONE
                 astate.reason = f"心跳守护：连续{cfg.heartbeat_n_rounds}轮无实质产出；模块无法拆分"
@@ -554,7 +562,7 @@ def _run_module(ctx: TaskContext, state: RunState, mid: str,
                                 reason=f"本块已 pass；剩余 {rem} 行 ≤ 出口阈值，final 续做：本轮把剩余做完后收工")
                     continue
                 if cfg.enable_split and astate.split_depth < cfg.split_max_depth:
-                    result = _do_split(ctx, state, mid, events, aout)
+                    result = _do_split(ctx, state, mid, events, aout, split_driver=split_driver)
                     if result == "split_ok":
                         return DONE   # 父模块标记 split，子模块入队
                     astate.reason = (aout.reason or "pass 但剩余过多，无法拆分") + f"（剩余 {rem} 行）"
@@ -594,7 +602,7 @@ def _run_module(ctx: TaskContext, state: RunState, mid: str,
             if action == RETRY:
                 continue   # 续做：同 executor 下一轮，REVIEW 已带 auditor 反馈
             if action == SPLIT:
-                result = _do_split(ctx, state, mid, events, aout)
+                result = _do_split(ctx, state, mid, events, aout, split_driver=split_driver)
                 if result == "split_ok":
                     return DONE   # 父模块标记 split，子模块入队
                 astate.reason = (aout.reason or "partial 无法拆分，回人")
@@ -617,7 +625,7 @@ def _run_module(ctx: TaskContext, state: RunState, mid: str,
                            f"现象: {aout.reason or 'auditor block'}\n已试办法: 已按 auditor 反馈重做\n")
             switch_executor(ctx, state, mid, events, reason=aout.reason or "auditor block")
         if action == SPLIT:
-            result = _do_split(ctx, state, mid, events, aout)
+            result = _do_split(ctx, state, mid, events, aout, split_driver=split_driver)
             if result == "split_ok":
                 return DONE   # 父模块标记 split，子模块入队
             astate.reason = (aout.reason or "auditor block") + "：模块无法拆分，回人"
@@ -648,7 +656,8 @@ def _upgrade_model(ctx: TaskContext, state: RunState, mid: str,
 
 
 def _do_split(ctx: TaskContext, state: RunState, mid: str,
-              events: EventLog, aout: Any = None) -> str:
+              events: EventLog, aout: Any = None,
+              split_driver: Any = None) -> str:
     """SPLIT 落地（v1.0 C4）：调 split agent 拆模块 → 落地子模块 → 父模块标记 split。
 
     返回 "split_ok" | "split_failed"。任一步失败（agent 调用 / JSON 校验 / scaffold）
@@ -656,13 +665,38 @@ def _do_split(ctx: TaskContext, state: RunState, mid: str,
     """
     spec = ctx.modules[mid]
     astate = state.ensure(mid)
+    # 任务级兜底闸（2026-09-04 小澈复查）：cfg.split_max_depth 的真实语义是"**每个模块各自**
+    # 能拆 N 次"（子模块 state 全新、depth 从 0 起），不是"整棵树最多 N 层"，所以树深本身
+    # 没有上限。层③改动后"剩太多就先拆"让拆分更激进 → 失控递归（模型反复报大剩余、
+    # 无限生模块无限烧 token）的风险上升，这里补一道全流程模块总数闸，超限直接失败回人。
+    if len(ctx.modules) >= ctx.config.split_max_total:
+        events.emit("module.split_failed", module=mid, detail={
+            "parent": mid, "root": "self",
+            "error": f"任务级模块总数已达上限 {ctx.config.split_max_total}"
+                     f"（当前 {len(ctx.modules)}）：防失控递归，不再拆分",
+            "hint": "如确属大任务，调大 runtime.split_max_total 或 --split-max-total",
+        })
+        return "split_failed"
     try:
         context = collect_split_context(ctx, state, mid, audit=aout)
-        split_json = call_split_agent(ctx, mid, context)
+        # 层②③④ 降级留痕接进事件流（2026-09-04 小澈复查：静默降级 = 没有降级，
+        # P0-3 的 pydantic 缺库降级就是这样瞒过所有人的）
+        split_json = call_split_agent(
+            ctx, mid, context, driver=split_driver,
+            on_event=lambda kind, detail: events.emit(kind, module=mid, detail=detail))
         child_ids = scaffold_children(ctx, mid, split_json)
         generate_shared_context(ctx, mid, split_json, aout)
+    except SplitInfraError as e:
+        # 基础设施/上游故障（缺 fw-spawn.py、dsh 未就绪、限流断网）：归因写清楚是
+        # "我们的环境没装好"，不是"模型拆不出来"。历史教训 BUG-20260903-A①——同一路径
+        # 不存在被当成 agent 退出码 3 一路回人，排查方向整个被带偏。
+        events.emit("module.split_failed", module=mid, detail={
+            "parent": mid, "error": f"{type(e).__name__}: {e}", "root": "infra",
+            "hint": "非协议故障：不回喂 LLM 重试，先修环境（见模块 tmp/split_spawn.log）",
+        })
+        return "split_failed"
     except CannotSplitError as e:
-        # 2026-08-28（杰哥定稿）：split agent 判定剩余为收尾量级 → 程序化生成「单块」
+        # 2026-08-28（Owner定稿）：split agent 判定剩余为收尾量级 → 程序化生成「单块」
         # 下放（剩余全量一次做完）。不回原 executor 续做、不回人、不丢活。
         events.emit("module.cannot_split_wrapup", module=mid, detail={
             "parent": mid, "reason": str(e),

@@ -479,3 +479,34 @@ def test_end_to_end_split_aggregate_and_dependency(runner_root, harness):
     assert result.completed == ["m01a", "m01", "m02"], result.completed
     # 每批聚合（C7）：aggregated 事件恰一次
     assert len([e for e in events if e["event"] == "module.aggregated"]) == 1
+
+
+# ---------- 2026-09-04 小澈复查：升级链计数口径 + 任务级失控闸 ----------
+
+def test_switch_executor_resets_partial_failure_budget(runner_root, tmp_path):
+    """换 executor 必须清掉"同因零进展"额度：新 executor 不该背着前任的失败次数。"""
+    from fw_runner.upgrade import switch_executor
+    ctx, state = _ctx_state(runner_root)
+    events = _elog(tmp_path)
+    a = state.ensure("m01")
+    a.no_progress_streak = 2
+    a.last_remaining_sig = "还差登录接口"
+    a.executor_id = "E1"
+    switch_executor(ctx, state, "m01", events, reason="测试换人")
+    assert a.executor_switches == 1
+    assert a.no_progress_streak == 0, "换人未清零 → 新 executor 一上场就到回人线"
+    assert a.last_remaining_sig == ""
+
+
+def test_split_max_total_blocks_runaway_without_calling_agent(runner_root, tmp_path):
+    """任务级模块总数闸：到顶就不再拆，而且**不白花一次 split agent 调用**。"""
+    ctx, state = _ctx_state(runner_root)
+    events = _elog(tmp_path)
+    ctx.config.split_max_total = len(ctx.modules)      # 故意设成已用满
+    with mock.patch.object(runner_mod, "call_split_agent") as spy:
+        got = _do_split(ctx, state, "m01", events, None)
+    assert got == "split_failed"
+    spy.assert_not_called()
+    lines = (tmp_path / "dispatch.jsonl").read_text(encoding="utf-8").splitlines()
+    errs = [json.loads(x).get("detail", {}).get("error", "") for x in lines]
+    assert any("防失控递归" in e for e in errs), errs

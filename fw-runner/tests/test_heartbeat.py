@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 
+from helpers import unavailable_split_driver
 from fw_runner.heartbeat import detect_stall, should_escalate
 from fw_runner.model import DriverOutcome
 from fw_runner.runner import run
@@ -42,6 +43,7 @@ def test_heartbeat_stall_escalates(single_root, harness):
     result = run(single_root,
                  executor_driver=harness.make_executor(),
                  auditor_driver=harness.make_auditor(),
+                 split_driver=unavailable_split_driver(),
                  overrides={"heartbeat_n_rounds": 1, "retry_before_switch": 2,
                             "max_executor_switches": 1, "executor_max_rounds": 10})
 

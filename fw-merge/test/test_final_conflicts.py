@@ -118,3 +118,41 @@ def test_compile_notes_explain_non_compilable_points(final_task):
     same = next(n for n in notes if n.reason == "same_name")
     assert same.module == "mod_c"
     assert same.target_path == "dup/thing.py"
+
+
+def test_private_symbols_excluded_from_signature_mismatch(tmp_path):
+    """BUG-20260904 修复：模块私有符号（下划线开头）不参与 signature_mismatch。
+
+    script2video 合并实测三条误报全是私有符号被卷入（``_scene_type`` vs
+    ``SceneType``、``_resolve_root`` vs ``resolve_root``、``_load_manifest`` vs
+    ``load_manifest``）——Python 惯例 ``_x`` 是模块私有，不构成跨模块契约。
+    """
+    import os
+
+    from helpers import _write
+
+    root = os.path.abspath(str(tmp_path / "task"))
+    mods = os.path.join(root, "modules")
+    # m_a：公开 load_manifest(path, root) / resolve_root(root)
+    _write(
+        os.path.join(mods, "m_a", "src", "core", "layout.py"),
+        "def load_manifest(manifest_path, root):\n    return manifest_path\n\n"
+        "def resolve_root(root):\n    return root\n",
+    )
+    _write(os.path.join(mods, "m_a", "contract.yaml"), "module: m_a\ndependencies: []\n")
+    # m_b：私有 _load_manifest(root)（归一化后与公开 load_manifest 撞名）；
+    #      公开 resolve_root(root, base)——真签名冲突，应保留。
+    _write(
+        os.path.join(mods, "m_b", "src", "console", "app.py"),
+        "def _load_manifest(root):\n    return root\n\n"
+        "def resolve_root(root, base):\n    return root\n",
+    )
+    _write(os.path.join(mods, "m_b", "contract.yaml"), "module: m_b\ndependencies: [m_a]\n")
+
+    modules = modules_with_src(root)
+    mismatches = detect_signature_mismatches(modules)
+
+    assert len(mismatches) == 1
+    assert "resolve_root" in mismatches[0].description
+    assert "_load_manifest" not in mismatches[0].description
+    assert mismatches[0].needs_human is True

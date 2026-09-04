@@ -21,7 +21,7 @@ FW1="${FW1:-$HOME/projects-hold/projects/dsh-workflow/framework-v1}"
 BIN="$FW1/fw-runner/bin"
 RUNNER="$BIN/fw-runner"   # bugfix: 此前用未赋值的 $RUNNER，set -u 下 autoknit run 必崩。指向真正入口 bin/fw-runner
 
-# 独立 DSH_HOME：fw 专用环境，不碰主 ~/.dsh（小理等 agent 用 pro 不受影响）
+# 独立 DSH_HOME：fw 专用环境，不碰主 ~/.dsh（PM等 agent 用 pro 不受影响）
 # 默认 ~/.fw-dsh（含独立 settings.yaml=flash + 独立 credentials=新 key）；可 FW_DSH_HOME 覆盖
 FW_DSH_HOME="${FW_DSH_HOME:-$HOME/.fw-dsh}"
 export DSH_HOME="$FW_DSH_HOME"
@@ -61,7 +61,7 @@ done
 # 转绝对路径（后续 cd 到 fw-runner 后仍可用）
 TASK_DIR="$(cd "$TASK_DIR" && pwd)"
 
-# 环境预置（2026-08-25，杰哥拍板）：角色需要的能力任务开始时配好——venv+依赖+命令探测，
+# 环境预置（2026-08-25，Owner拍板）：角色需要的能力任务开始时配好——venv+依赖+命令探测，
 # 产出 tmp/env-manifest.json 供 executor/auditor 指令注入（可用命令必须真跑，不可用不得假装）
 echo "── 环境预置（fw-env）──"
 bash "$BIN/fw-env-bootstrap.sh" "$TASK_DIR" || { echo "✗ 环境预置失败，中止"; exit 1; }
@@ -116,17 +116,20 @@ if [ "$(uname -s)" = "Darwin" ] && command -v caffeinate >/dev/null 2>&1; then
   CAFF="caffeinate -i"
 fi
 
+# BUG-20260903-C 防御改写：后台 job 环境下偶发「line 129: CODE: unbound variable」
+# （文件字节干净、所有变量有初始化、前台不复现，根因未定论）。改用 `|| RUN_RC=$?`
+# 捕获退出码 + 显式初始化，不再依赖 `$?` 在多行续行命令后的时序行为。
+RUN_RC=0
 PYTHONDONTWRITEBYTECODE=1 $CAFF $RUNNER run "$TASK_DIR" \
   --executor-cmd "bash $BIN/fw-executor.sh" \
   --auditor-cmd "bash $BIN/fw-auditor.sh" \
   $RUN_ARGS \
-  $RESUME
+  $RESUME || RUN_RC=$?
 
-CODE=$?
 echo ""
 # 启动失败不再沉默（2026-08-30 案例6）：非零退出时指明排查入口——哪个阶段崩了、日志在哪
-if [ "$CODE" -ne 0 ]; then
-  echo "✗ fw-run 失败（退出码 $CODE）。排查入口："
+if [ "$RUN_RC" -ne 0 ]; then
+  echo "✗ fw-run 失败（退出码 $RUN_RC）。排查入口："
   echo "  • 事件流（最后一条=谁崩的）: $TASK_DIR/总日志/dispatch.jsonl"
   echo "  • executor 输出: $TASK_DIR/modules/*/tmp/executor_output.txt"
   echo "  • auditor 输出:  $TASK_DIR/modules/*/tmp/auditor_output_*.txt"
@@ -137,4 +140,4 @@ if [ -n "$WATCH" ] && [ -f "$TASK_DIR/总日志/快照.json" ]; then
   echo "── 结果速览（fw-status --once）──"
   fw-status "$TASK_DIR" --once
 fi
-exit $CODE
+exit "$RUN_RC"

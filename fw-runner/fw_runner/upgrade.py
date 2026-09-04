@@ -82,28 +82,50 @@ def route_verdict(state: RunState, mid: str, cfg: RunConfig,
 def route_partial(state: RunState, mid: str, cfg: RunConfig,
                   passed_count: int, total_count: int,
                   remaining_items: list) -> str:
-    """partial 判定路由（v2 贪心）：看剩余交付物数，不看次数。
+    """partial 判定路由（2026-09-04 Owner拍板重写）。
 
-    - 剩余 ≤ retry_remaining_threshold → 原 executor 续做（剩得不多，做完就好）
-    - 剩余 > retry_remaining_threshold → 立即 SPLIT（剩太多，跳过无谓续做，拆给下一个）
-    - partial_count 只作防死循环兜底：连续续做超 max_partial_rounds 次仍做不完 → 回人
+    一句话原则：**计数只管"这个人卡住了"，不管"这活干不完"。**
 
-    语义对齐杰哥诉求："剩得不多让原 executor 做完，剩得太多叫 split 继续"。
+      1. 剩余 > retry_remaining_threshold → 先 SPLIT，**不看任何次数**。
+         剩太多是"块太大"，不是"人不行"——旧实现把 max_partial_rounds 的判断写在
+         最前面，于是"续做失败说明这块看着小实际大、该叫 split 继续拆"这条设计路径
+         **永远走不到**（第二次 partial 一律回人），正是Owner担心的"两次误伤递归"。
+      2. 剩不多 → RETRY 让原 executor 续做。
+      3. 只有**同因零进展连续**到 max_partial_rounds 才回人——
+         即Owner原话「同一个执行者连续两次做同样的任务不成功 → 上升给人」。
+         "同因"的机器判据 = auditor 报的剩余清单指纹与上一轮一致（有进展就重新计数）。
+         旧实现用的是只增不清零的 partial_count（累计），既不判"同因"也不判"连续"，
+         且换 executor 也不清，等于新 executor 一上场就背着前任的失败额度。
+
+    partial_count 保留（子模块合并回父 should_merge_back 仍按它计数，语义不变）。
     """
     astate = state.ensure(mid)
     astate.partial_count += 1
     astate.last_verdict = "partial"
     remaining = len(remaining_items) if remaining_items else max(0, total_count - passed_count)
-    # 防死循环兜底：连续 partial 太多次仍做不完 → 回人
-    if astate.partial_count >= cfg.max_partial_rounds:
+
+    # 指纹：auditor 没给清单时退化成"剩余条数"，仍能区分"有没有进展"
+    sig = "|".join(sorted(str(x).strip() for x in remaining_items)) if remaining_items \
+        else f"n={remaining}"
+    if sig == astate.last_remaining_sig:
+        astate.no_progress_streak += 1          # 还是那几件事没做成
+    else:
+        astate.no_progress_streak = 1           # 清单变了 = 有进展，重新起算
+    astate.last_remaining_sig = sig
+
+    # ① 剩太多：是块大，不是人差 → 能拆就拆，绝不被次数截胡
+    if remaining > cfg.retry_remaining_threshold:
+        if cfg.enable_split and astate.split_depth < cfg.split_max_depth:
+            return SPLIT
+        return HUMAN                            # 拆不了（关了 split 或本模块额度用尽）→ 回人
+
+    # ② 剩不多 + 同因零进展到顶 → 回人（Owner的"两次同样任务不成"）
+    if astate.no_progress_streak >= cfg.max_partial_rounds:
         return HUMAN
-    # 剩余不多 → 原 executor 续做
-    if remaining <= cfg.retry_remaining_threshold:
-        return RETRY
-    # 剩余多 → 立即 split（跳过无谓续做）
-    if cfg.enable_split and astate.split_depth < cfg.split_max_depth:
-        return SPLIT
-    return HUMAN
+
+    # ③ 剩不多、还有变化 → 原 executor 续做
+    return RETRY
+
 
 
 def should_merge_back(state: RunState, mid: str, cfg: RunConfig) -> bool:
@@ -175,6 +197,11 @@ def switch_executor(ctx: TaskContext, state: RunState, mid: str,
     astate.executor_id = f"E{astate.executor_switches + 1}"
     astate.block_count = 0
     astate.stall_count = 0
+    # 失败额度跟人走（2026-09-04 Owner拍板）：换 executor 必须清掉"同因零进展"计数，
+    # 否则新 executor 一上场就背着前任的额度，第一次 partial 就可能直接回人
+    # ——旧实现只清了 block_count/stall_count，唯独没清 partial_count。
+    astate.no_progress_streak = 0
+    astate.last_remaining_sig = ""
     module = ctx.modules[mid]
     try:
         snap = progress_snapshot(module)

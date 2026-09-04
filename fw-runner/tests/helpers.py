@@ -62,3 +62,27 @@ def module(id_: str, name: str, deps=None, layer: int = 1, objective: str = "目
     return m
 
 
+
+
+def unavailable_split_driver():
+    """显式表达"拆分不可用"前提的 split 驱动（2026-09-04 小澈复查 N1）。
+
+    背景：test_acceptance3 / test_heartbeat / test_root_cause_routing /
+    test_progress_snapshot / test_subprocess_drivers 这 5 条要验的路由是
+    「升级链用尽 → 尝试 SPLIT → 拆分失败 → 回人」，但它们把"拆分失败"这个前提
+    **寄托在环境巧合上**（docstring 自陈"缺 fw-split.sh"）。BUG-20260903-A① 把
+    fw-split.sh 修好之后前提自动失效：不设 FW_SPLIT_MODE 时真起 dsh（烧钱 + flaky），
+    设成 demo 时拆分真成功 → 断言集体崩。
+
+    现在前提由测试自己注入，不再依赖环境，也不会碰真模型。
+    exit 2 是刻意的：让 _classify_call_failure 归到 infra，走 SplitInfraError
+    → 不回喂 LLM → split_failed → 回人，与用例想守的语义一致。
+    """
+    from fw_runner.drivers import InlineAgentDriver
+    from fw_runner.model import DriverOutcome
+
+    def fn(ctx):
+        return DriverOutcome(
+            status="error", reason="注入的拆分故障（模拟缺 fw-spawn.py / dsh 未就绪）",
+            detail={"exit": 2, "stderr": "injected: split unavailable"})
+    return InlineAgentDriver(fn)

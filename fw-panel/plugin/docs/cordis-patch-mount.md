@@ -66,7 +66,7 @@ tdai-memory 条目并列）追加：
 - [ ] 插件在 `dsh.profile.bundles` **之外**，只在 cordis.patch.yml insert
 - [ ] profile package.json dependencies 有 `file:plugins/dsh-client-ui-autoknit`
 - [ ] `corepack pnpm install` 成功；重启后 DSH 正常启动，右侧 details 槽位出现面板
-      （视觉交杰哥真人验收）
+      （视觉交Owner真人验收）
 
 ## 3. 边界
 

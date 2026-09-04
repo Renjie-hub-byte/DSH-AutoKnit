@@ -77,7 +77,20 @@ def load_plan_from_task_yaml(path: str | Path) -> TaskPlan:
     for item in raw_modules:
         if not isinstance(item, dict) or not item.get("name"):
             raise InvalidTaskDirError("task.yaml 模块缺少 name")
-        estimated = _to_int(item.get("estimated_lines"), f"模块 {item['name']}.estimated_lines")
+        # BUG-20260903-B 修复：fw-runner scaffold(v1.0.x) 生成的 task.yaml 把行数估算
+        # 放在 remaining_estimate.estimate_lines / first_block.estimate_lines（嵌套结构），
+        # 模块顶层没有 estimated_lines → _to_int(None) 让 summary 直接炸。
+        # 兼容两级 schema：顶层 estimated_lines → remaining_estimate.estimate_lines →
+        # first_block.estimate_lines → 0（summary 是报表，缺字段降级为 0，不阻断）。
+        re_raw = item.get("remaining_estimate")
+        fb0_raw = item.get(FIRST_BLOCK_KEY)
+        estimated_raw = item.get("estimated_lines")
+        if estimated_raw is None and isinstance(re_raw, dict):
+            estimated_raw = re_raw.get("estimate_lines")
+        if estimated_raw is None and isinstance(fb0_raw, dict):
+            estimated_raw = fb0_raw.get("estimate_lines")
+        estimated = _to_int(estimated_raw if estimated_raw is not None else 0,
+                            f"模块 {item['name']}.estimated_lines")
         fb_raw = item.get(FIRST_BLOCK_KEY)
         if not isinstance(fb_raw, dict):
             raise InvalidTaskDirError(f"模块 {item['name']} 缺少 first_block")

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 
+from helpers import unavailable_split_driver
 from fw_runner.context import load_task_context
 from fw_runner.drivers import InlineAgentDriver
 from fw_runner.model import DriverOutcome
@@ -112,7 +113,8 @@ def test_rounds_near_exhaustion_archives_placeholder(single_root):
                  overrides={"executor_max_rounds": 3, "retry_before_switch": 99,
                             "max_executor_switches": 0},
                  executor_driver=InlineAgentDriver(executor),
-                 auditor_driver=InlineAgentDriver(auditor))
+                 auditor_driver=InlineAgentDriver(auditor),
+                 split_driver=unavailable_split_driver())
 
     assert result.status == "needs_human"
     assert exec_calls["n"] == 3                       # 第 3 轮跑完即触顶，不给第 4 轮
@@ -141,7 +143,8 @@ def test_executor_round_error_archives_placeholder(single_root):
         return DriverOutcome(status="ok", verdict="pass", evidence_level="L2", confidence=0.9)
 
     result = run(single_root, executor_driver=InlineAgentDriver(executor),
-                 auditor_driver=InlineAgentDriver(auditor))
+                 auditor_driver=InlineAgentDriver(auditor),
+                 split_driver=unavailable_split_driver())
 
     assert result.status == "needs_human"
     assert calls["exec"] == 4            # E1 错 2 次换 E2；E2 错 2 次走 SPLIT 路由 → 拆分失败回人

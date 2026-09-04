@@ -6,7 +6,7 @@
 task:
   name: 端到端-订单管道
   source_prd: e2e/PRD-订单管道.md
-  owner: 小理
+  owner: PM
   created: "2026-08-21"
   grade: B
   prediction_baseline:

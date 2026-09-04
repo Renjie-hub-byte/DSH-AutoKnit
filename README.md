@@ -1,327 +1,232 @@
-# AutoKnit
+# framework-v1 —— dsh 之上的任务编排层（v0.4 实现）
 
-[English](README.md) | [简体中文](README.zh-CN.md)
-
-**Throw in a PRD — it decomposes tasks, dispatches agents, verifies acceptance, and splits recursively on its own. Cheap to build, cheaper to maintain, zero babysitting.**
-
-AutoKnit is an open-source divide-and-conquer execution framework that sits between "chatting with your agent step by step gets exhausting" and "enterprise-grade heavy frameworks are too expensive". It never burns context playing "general coordinator": **the program does all scheduling (0 tokens), LLMs only contribute intelligence**. You review the plan once, and merge the code once at the end.
-
-> **Benchmarked**: on a ~7,000-line task, AutoKnit cold start was the **cheapest (749K tokens), fastest (37 minutes), and had the highest test density (26.4/1k lines)** — 19% cheaper than a single interactive agent and 41% cheaper than lh-harness. Full comparison in [Section 2](#2-benchmarked-083031-same-machine-same-accounting).
-
-> The execution substrate is [dsh](docs/quickstart.md) (the **DeepSeek harness**) — it owns sessions and model calls; AutoKnit owns decomposition, dispatch and acceptance. Comparison baseline [lh-harness](https://github.com/) (**Long Horizon Harness**, an excellent enterprise-grade development framework) also runs on codex as executor; some of the numbers in this README come from fair head-to-head runs against it.
+> PM（PM）｜ 2026-08-21 ｜ 状态：需求 1-7 全部落地（需求 1/2/3/4/5/6 经 auditor round_001/002/004/005/007/008 审计 complete/clean；需求 7 端到端 + 文档见 `e2e/` 与本文件）
+> 定位：在 dsh（DeepSeek Harness / Cordis 插件平台）之上实现轻量**任务编排层**——规划共识 → 事件驱动分治执行，
+> 把任务拆成模块、并行执行、独立验收、预算控制。比 某高星harness框架 更省 token（并行 + fork 继承 + 事件流增量而非全量重发）。
 
 ---
 
-## 1. What problem does it solve
+## 一、架构总览
 
-**Pain point: Vibe Coding developers spend endless time and energy and still don't know how to arrange and architect things.**
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                          dsh 平台（Cordis 插件生态）                          │
+│  沙箱硬隔离 / sessions.fork(省缓存) / fs 原子写(并发防护) / 事件 seq(完整性)   │
+│  sessionProjections checkpoint / session-query(审计) / token-meter(记账)      │
+└───────────────▲───────────────────────────────▲────────────────────────────┘
+                │ 接入点（标注为适配点/本地等价物，见 design-v04.md §五）
+┌───────────────┴───────────────────────────────┴────────────────────────────┐
+│                          framework-v1 编排层（本仓库）                        │
+│                                                                              │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐   ┌─────────────┐ │
+│  │ fw-protocol  │───▶│ fw-scaffold  │───▶│  fw-runner   │──▶│fw-integrate │ │
+│  │ 任务书schema  │    │ 目录脚手架 v2 │    │ 编排主循环     │   │ 集成验收+归档│ │
+│  │ 三查校验器     │    │ 派生模块任务书 │    │ 并行/升级链/    │   │ 运行时契约校验│ │
+│  │ (需求1)       │    │ (需求2)       │    │ checkpoint/   │   │ 基线对照     │ │
+│  │              │    │              │    │ 心跳          │   │ (需求6)      │ │
+│  └──────────────┘    └──────────────┘    └──────┬───────┘   └──────┬──────┘ │
+│        │ CLI/API                │                 │  BudgetGate     │        │
+│        ▼                        ▼                 ▼                 ▼        │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐   ┌─────────────┐ │
+│  │ presets/     │    │  fw-budget   │    │ 总日志/       │   │  e2e/        │ │
+│  │ 三角色 dsh    │    │ 预算闸门     │    │ event seq     │   │ 端到端示例   │ │
+│  │ preset       │    │ warn/stop/   │    │ 快照.json v3  │   │ + 复现脚本   │ │
+│  │ (需求3)      │    │ add-budget/  │    │ checkpoint    │   │ (需求7)      │ │
+│  │              │    │ resume/归档   │    │              │   │              │ │
+│  │              │    │ (需求5)      │    │              │   │              │ │
+│  └──────────────┘    └──────────────┘    └──────────────┘   └─────────────┘ │
+└────────────────────────────────────────────────────────────────────────────┘
+```
 
-| What you do today | Why it hurts |
-|---|---|
-| Chat with your own agent step by step, fixing step by step | You repeat yourself over and over while the context balloon keeps growing |
-| Throw a big task at an interactive coding tool | Past ~1,000 lines, single-session orchestration costs spiral out of control and delivery gets thin |
-| Adopt a heavy open-source framework for quality | You keep re-injecting context to maintain state — enormous consumption |
-| Changing requirements / fixing bugs after launch | Touch one point and several modules ripple; rework + regression burn tokens over and over — **5 bucks of development, 100 bucks of wrangling and maintenance** |
+**六模块职责一句话**：
 
-AutoKnit fills exactly this gap: **engineering and contracts replace "repeated conversation", so LLMs only contribute intelligence. Target scale: 1,000–10,000 lines — you save not only on code production itself, but on the hidden costs of back-and-forth wrangling during development and repeated rework during maintenance.**
-
----
-
-## 2. Benchmarked (2026-08-30/31, same machine, same accounting)
-
-> Detailed accounting notes at the end of this section; per-case full reports in `docs/benchmark.md`. These are **initial reference directions** (single-run samples). You're welcome to share your own measurements in Issues — the benchmark will keep updating with community feedback.
-> Subjects: AutoKnit (deepseek-v4-flash @official API, thinking low, explicitly reproducible), lh-harness (same model and tier, thinking low), single interactive agent (GLM-5.3-Flash with thinking, single-session continuous mode; its billing excludes independent audit).
-> Billing = uncached input + output (each tool counts tokens differently; normalized). **Every token number in this document is billed accounting and comparable across tables — the single exception is the "modification experiment" table (raw, incl. cache), which is for relative comparison between the four rows only.**
-
-### Module-level tasks (500–1,000 lines, three independent implementations, same PRD)
-
-**m01 DSH task-state data bridge** (~1,000 lines expected, 5 acceptance items)
-
-| | Total input | Uncached input | Output | Cache read | Hit rate | Billed tokens | Delivery (lines) | Tests |
-|---|---|---|---|---|---|---|---|---|
-| AutoKnit | 3,838,733 | 151,181 | 68,352 | 3,687,552 | 96.1% | 219,533 | 1,591 (1,400 code) | **51** |
-| lh-harness | 2,074,086 | 232,934 | 99,701 | 1,841,152 | 88.8% | 332,635 | 1,695 (1,534 code) | 29 |
-| Single interactive agent | 382,495 | 32,863 | 12,989 | 349,632 | 91.4% | **45,852** | 785 | 15 |
-
-**m02 session/usage data bridge** (5 acceptance items; delivery lines = business source lines, same accounting)
-
-| | Total input | Uncached input | Output | Cache read | Hit rate | Billed tokens | Delivery (lines) | Tests |
-|---|---|---|---|---|---|---|---|---|
-| AutoKnit | 5,677,336 | 167,960 | 136,013 | 5,509,376 | 97.0% | **303,973** | 2,322 (1,120 code) | 82 |
-| lh-harness | 8,309,223 | 197,735 | 165,796 | 8,111,488 | 97.6% | 363,531 | 1,867 | 88 |
-| Single interactive agent | 4,682,422 | 352,310 | 154,453 | 4,330,112 | 92.5% | 506,763 | 1,463 | 47 |
-
-> m02 is the final data from the 09-01 framework (same PRD, same model deepseek-v4-flash + thinking low). **AutoKnit 303,973 — 16% cheaper than lh (363,531), 40% cheaper than the interactive agent (506,763)**; delivery of 2,322 lines is 24% thicker than lh; 82 tests all green (auditor verifies item by item).
-
-**m03 human-reply service** (smallest module, ~600 lines, 5 acceptance items; same PRD, three independent implementations, all independently re-verified)
-
-| | Total input | Uncached input | Output | Cache read | Hit rate | Billed tokens | Delivery (lines) | Tests |
-|---|---|---|---|---|---|---|---|---|
-| AutoKnit | 1,143,461 | 72,101 | 35,685 | 1,071,360 | 93.7% | 107,786 | 785 (369 code) | 27 |
-| lh-harness | 750,286 | 43,982 | 29,537 | 706,304 | 94.1% | **73,519** | 527 | 16 |
-| Single interactive agent | 302,799 | 25,423 | 10,865 | 277,376 | 91.6% | **36,288** | 397 | 20 |
-
-> Same PRD for all three (sha256 identical); the difference is the execution model itself: AutoKnit's auditor collects evidence item by item plus programmatic checks, lh's auditor "quits when acceptance passes", the interactive agent has no independent audit. m03 is the smallest module (~600 lines): AutoKnit 107,786 — 1.5× lh, 3.0× interactive. **At the 300–500 line scale orchestration overhead can't amortize; the interactive agent is the best tool** (consistent with the sweet spot below).
-
-**m04 create-agent/create-session workspace binding** (~750 lines, 5 acceptance items; AutoKnit as a single module — different decomposition granularities of the same task differ 4.6× in cost: granularity itself is the biggest cost lever)
-
-| | Billed tokens | Delivery (lines) | Tests |
+| 模块 | 目录 | 职责 | 审计 |
 |---|---|---|---|
-| AutoKnit (single module) | **62,685** | 549 | 21 |
-| lh-harness | 139,258 | 601 | 25 |
-| Single interactive agent | **51,513** | 573 | 24 |
+| fw-protocol | `fw-protocol/` | task.yaml JSON Schema（draft 2020-12）+ 三查（依赖环 DFS / 接口前缀+方法重复 / 验收冲突标记） | round_001 ✅ |
+| fw-scaffold | `fw-scaffold/` | 读合法 task.yaml 一键生成 v2 目录树 + 派生模块任务书 + 模板 + expected 版本防护 | round_002 ✅ |
+| fw-runner | `fw-runner/` | 依赖图拓扑分层 → 并行调度 ≤max_parallel → 升级链（2+1 回人）→ 心跳 → checkpoint/resume | round_004 ✅ |
+| fw-budget | `fw-budget/` | token 记账（dsh token-meter 适配点 stub）+ 70%/100%/单模块上限闸门 + add-budget/resume/归档 | round_005 ✅ |
+| fw-integrate | `fw-integrate/` | 运行时契约校验（接口/数据格式/跨模块依赖）+ 预测基线对照 + end_gate + 完成报告/归档 | round_007 ✅ |
+| presets | `presets/` | 三角色 dsh preset（planner/executor/auditor）+ 三权分立 persona + auditor 四段机器可解析输出 | round_008 ✅ |
 
-> m04 is 09-01 framework data (single module, done in 1 round, 139s). **AutoKnit 62,685 — 55% cheaper than lh**, only 22% more expensive than the interactive agent (51,513) — whose billing excludes independent audit.
+## 二、全流程（一次任务的编排生命周期）
 
-### Large task (~7,000 lines: plan-only mode + programmatic code merge + DSH panel plugin; all three passed acceptance)
+```
+PLANNER(人/preset) ── 产出 task.yaml（只拆不写）
+   │  fw-protocol 校验（结构 schema + 依赖环/接口重复/验收冲突三查）── 不通过 → 打回规划
+   ▼
+fw-scaffold 生成任务目录树（任务-<名>_<日期>/ + 总日志三件套 + modules/mXX-*/ + 派生任务书）
+   ▼
+fw-runner 主循环（本框架核心）：
+   依赖图拓扑分层 → 同层独立模块并行（sessions.fork 继承公共上下文，≤ max_parallel）
+   → 每模块：executor 干活（cwd=模块目录，sandbox workspace-write）→ auditor 判定（read-only）
+   → 升级链：block → 回同 executor(附带 REVIEW.md 反馈) → block 满 retry_before_switch 次 → 换 executor(交接三件套)
+              → 满 max_executor_switches → 回人；root∈{upstream,contract} 直接抛人不重试
+   → 心跳守护：连续 N 轮无实质产出 → 静默卡死 → 进升级链
+   → 每 checkpoint_every 模块完成 / 关键状态转移写 总日志/快照.json（schema v3，原子写）
+   → 模块完成时挂 BudgetGate（warn 70% 提示不停机 / stop 100% 硬停抛人 / 单模块超限硬停）
+   → 全部模块完成 → 挂 IntegrationHook（fw-integrate 运行时契约校验 + 基线对照）
+   ▼
+fw-integrate 收尾：end_gate=auto → 全部通过 → 完成报告.md + 归档 archived/；异常 → 回人
+   ▼
+fw-budget 管理：人工 add-budget → fw-runner --resume-from-checkpoint 续跑（已完成模块零重跑）；
+                放弃 → fw-budget archive 归档
+```
 
-| | Billed tokens | Delivery (lines) | Tests | Time |
+## 三、目录规范 v2（fw-scaffold 产物形态）
+
+```
+任务-<名>_<日期>/
+├── task.yaml                # effective 任务书（默认值补全；唯一事实源）
+├── contracts/api.yaml       # 契约区（所有接口集中管理）
+├── skeleton.md 认知/  shared/ # 骨架 / 规划认知区 / 只读共享区（.readonly，非 auditor 豁免区）
+├── 总日志/                   # dispatch.jsonl（事件 seq）+ integration.jsonl + 快照.json
+└── modules/
+    └── mXX-<名>/
+        ├── src/ test/       # 交付物（auditor 结果对照面）
+        ├── logs/ tmp/       # 豁免区（.auditor-ignore：执行期日志/临时文件）
+        ├── REVIEW.md        # 模块验收闭环（机器键 status/executor_round/auditor_round/root/confidence…）
+        ├── contract.yaml    # 模块接口契约（read_api 预填；input/output 由 executor 填写）
+        ├── 任务书-mXX.yaml   # 派生模块级任务书（原子合同）
+        └── 交付说明.md       # executor 交付报告（基线证据面）
+```
+
+## 四、全部配置项（task.yaml）
+
+### 4.1 task（任务元信息 + 预测基线）
+
+| 字段 | 类型 | 必填 | 默认 | 含义 |
 |---|---|---|---|---|
-| AutoKnit (cold start, packaged artifact) | **748,802** | 3,866 | **102** | **~37 min** |
-| AutoKnit (v4 rerun: fixed engine + UCD upstream digest, 2026-09-03) | **701,977** | 2,696* | 95 | **~33.6 min** |
-| lh-harness | 1,267,832 | 4,727 | ~44 | 130.5 min |
-| Single interactive agent | 926,171 | 1,784 | 48 | ~4.5h |
+| `task.name` | string | ✅ | – | 任务名（生成 `任务-<名>_<日期>` 目录） |
+| `task.source_prd` | string | – | – | PRD 来源（溯源） |
+| `task.owner` / `task.created` / `task.grade` | – | – | – | 负责人 / 创建日期 / 等级 A B C |
+| `task.prediction_baseline.will_have` | string[] | – | `[]` | 预测基线：最终交付会有什么（integrate 对照） |
+| `task.prediction_baseline.will_not_have` | string[] | – | `[]` | 预测基线：不会有什么（违反即回人） |
 
-### Modification experiment: four deliverables given the same change request (add `--dry-run` to merge)
+### 4.2 budget（预算闸门，fw-budget 消费）
 
-Real scenario: you ask an agent to change a feature; it first figures out "which files to touch", then starts. **If its estimate is far off, it misses files — at best multiple rounds of rework, at worst it ships with hidden problems**. So we tested: gave four independently generated deliverables (two AutoKnit builds / lh / interactive) the same change request, recorded the "predicted blast radius" with codegraph first, then measured the actual changes.
-
-| | AutoKnit (dogfooding) | AutoKnit (cold start) | lh-harness | Single interactive agent |
+| 字段 | 类型 | 必填 | 默认 | 含义 |
 |---|---|---|---|---|
-| Consumption (raw, incl. cache) * | 770,150 | 628,552 | 802,329 | **381,670** |
-| Predicted vs actual deviation | **-1** (predicted 5, actual 4) | **+1** (predicted 4, actual 5) | +3 (predicted 3, actual 6) | +2 (predicted 3, actual 5) |
-| Tests surviving | **58/58** | **29/29** | 39/39 | 19/19 |
-| Out-of-bound reads | 0 | 0 | 0 | 0 |
+| `budget.max_tokens` | int ≥1 | – | `1000000` | 全局 token 总预算 |
+| `budget.warn_at` | number 0–1 | – | `0.7` | 用量≥该比例 → **预警**（不停机，含模块消耗排行） |
+| `budget.stop_at` | number 0–1 | – | `1.0` | 用量≥该比例 → **硬停**（goal pause + 快照 + 抛人） |
+| `budget.per_module_max_tokens` | int ≥1 | – | `=max_tokens` | 单模块上限（防失控模块吃光全局；超限硬停） |
 
-> ⚠️ **Accounting note**: this table is the only raw (incl. cache) accounting in the document — during the modification experiment that interactive tool only recorded cache-inclusive totals and couldn't split them. **The four rows share one accounting, so relative comparison is valid; absolute values cannot be converted against the other tables (billed accounting).**
+### 4.3 runtime（执行期配置，fw-runner 消费）
 
-### Four takeaways from the data
+| 字段 | 类型 | 必填 | 默认 | 含义 |
+|---|---|---|---|---|
+| `runtime.models.planner/executor/auditor` | string | – | `deepseek-v4-pro / deepseek-v4-flash / deepseek-v4-flash` | 三角色模型 |
+| `runtime.max_parallel` | int ≥1 | – | `3` | 最大并行模块数（同层并行 ≤ 此值） |
+| `runtime.executor_max_rounds` | int ≥1 | – | `5` | 单模块 executor 轮数上限（超限换人/回人） |
+| `runtime.retry_before_switch` | int ≥1 | – | `2` | auditor 打回 N 次后换 executor |
+| `runtime.max_executor_switches` | int ≥0 | – | `1` | 最多换几个 executor，再卡回人 |
+| `runtime.end_gate` | enum | – | `auto` | `auto`=异常才找人；`always`=每任务人工确认 |
 
-**One-line summary: AutoKnit buys more maintainable, more reliable code for fewer tokens — the savings don't come from making the LLM work less, they come from turning orchestration and acceptance into 0-token programs so every token is spent on real output.**
+### 4.4 modules（模块清单，≥1）
 
-1. **Small tasks (≤1,000 lines): interactive tools are still cheapest** (36–52K vs AutoKnit's 62–304K) — that's why our sweet spot starts at 1,000 lines: single-session, zero orchestration overhead, it's simply optimal. **But once a task has a cross-module dependency chain (like m02's three modules), AutoKnit overtakes (303K vs 507K interactive, 40% cheaper)**.
-2. **Large tasks flip the order**: at 7,000 lines AutoKnit cold start was **cheapest (749K, -19% vs interactive, -41% vs lh), fastest (37min vs 4.5h), highest test density (26.4/1k lines)**. The interactive single-session model inflates context at scale (861K of uncached input, all spent re-reading new content).
-3. **The interactive agent's cheapness excludes audit**: its billing has no independent acceptance. Auditing three interactive deliverables at equivalent strength cost us 559K afterwards (~190K each) — **the interactive agent's true cost = generation + audit**. AutoKnit's auditor is built in; the quote includes verification.
-4. **Modification blast radius is predictable and quotable**: an agent's inherent flow when changing code is "read the structure → predict which files to touch → change them → run tests". Because AutoKnit's deliverables are **decomposed + modularized + contract-bounded**, what the agent reads is a clean module topology — measured prediction deviation ≤±1, maximally avoiding the three rework accidents: incomplete changes, one-touch-ripples-to-many, and shipping problems from half-finished edits. **Test density of 26.4/1k lines is 3× the baselines — the same lines of code, with over 3× the test escort.**
+| 字段 | 类型 | 必填 | 默认 | 含义 |
+|---|---|---|---|---|
+| `id` | `^m\d+$` | ✅ | – | 模块 id（依赖引用） |
+| `name` / `objective` / `layer`(1-3) | – | ✅ | – | 模块名 / 一句话职责 / 树深 |
+| `dependencies` | string[] | – | `[]` | 依赖模块 id（禁止环） |
+| `interfaces[]` | object[] | – | `[]` | 接口协议（**只到 前缀+方法 级**，禁规划期定字段） |
+| `interfaces[].path` / `.method` / `.note` | – | ✅/✅/– | – | 路径前缀（`/api/order/*`）/ HTTP 方法（大小写不敏感）/ 说明 |
+| `acceptance` | string[] | ✅ | – | 模块验收清单（≥1，必须可检查） |
+| `boundaries` | string[] | – | `[]` | 边界：不许碰什么 |
 
-#### Divide and conquer without reinventing wheels: UCD upstream digest (0 tokens)
+### 4.5 integration（集成验收，fw-integrate 消费）
 
-The classic cost of module-level divide-and-conquer: each module runs in its own clean session and doesn't know what the others already built — wheels get reinvented. AutoKnit solves this with **UCD (upstream capability digest)**: once an upstream module passes acceptance, the **program** (AST extraction, 0 tokens) generates an `UPSTREAM.md` — public interfaces, function signatures, one-line purposes — injected into the downstream executor's startup context. Downstream modules `import` and reuse directly, **without reading upstream source** (contracts + digest suffice; coupling stays low) — freeing capacity for robust code, tests, and documentation.
+| 字段 | 类型 | 必填 | 默认 | 含义 |
+|---|---|---|---|---|
+| `integration.contract_file` | string | – | `contracts/api.yaml` | 契约区路径 |
+| `integration.check.*`（5 个 bool） | bool | – | 全 `true` | 依赖环/接口重复/验收冲突（fw-protocol 执行）＋预测基线/跨模块数据依赖（fw-integrate 执行） |
 
-v4 rerun (2026-09-03, fixed engine + UCD): same PRD, same baseline — 701,977 billed (-6.3% vs baseline), 33.6 min, 95 test cases, 26.5% doc density (docstrings counted). **The isolation dividend of divide-and-conquer and the reuse dividend of a monolith, at the same time.**
+### 4.6 runner CLI 覆盖参数（`fw-runner run <根> [--max-parallel N --executor-max-rounds N --retry-before-switch N --max-executor-switches N --end-gate auto|always --heartbeat-n-rounds N --checkpoint-every N --mode speed_first|cost_first --resume-from-checkpoint]`）
 
-## Sweet spot (honest boundaries)
+## 五、模式开关（speed_first / cost_first）
 
-| Task size | Recommendation |
-|---|---|
-| ≤500 lines | Just use an interactive tool — instant to write, instant to change; don't use a framework |
-| 500–1,000 lines | Either works; interactive is faster, AutoKnit is thicker |
-| **1,000–10,000 lines** | **AutoKnit's bullseye** — decomposition, contracts, acceptance start compounding |
-| >10,000 lines | Theoretically fine, not yet systematically validated |
+| 模式 | 语义 | 差异 |
+|---|---|---|
+| `speed_first`（默认） | 追求吞吐 | `max_parallel` 用 runtime 原值；最大并行 |
+| `cost_first` | 省 token / 会话 | `max_parallel` 压到 `min(max_parallel, 2)`；`retry_before_switch + 1`（提高同 executor 打回耐心，少换人少开销） |
 
----
+显式 CLI 覆盖优先级最高，不受模式影响。端到端示例默认 `speed_first`（见 `e2e/task.yaml` runtime 段）。
 
-## 3. How it works (architecture)
+### 5.1 拆分驱动模式（FW_SPLIT_MODE，2026-09-04 约定）
 
-```
-                 PRD
-                  │
-        ┌────────▼────────┐
-        │     planner      │  Splits by coupling: tightly-coupled code goes together
-        └────────┬────────┘   + first-task detailed checklist + inter-module contracts
-                 ▼
-        ┌────────▼────────┐
-        │     executor     │  Independent session, responsible for its module only
-        └────────┬────────┘
-                 ▼
-        ┌────────▼────────┐
-        │     auditor      │  Verifies the acceptance list item by item + programmatic evidence
-        └────────┬────────┘
-                  │ Remaining modules still large?
-                  ▼ large (threshold tunable, ≈1000 lines) → split recursively
-                    small → the executor finishes the remainder itself
-                  ▼
-             All done ✅
-```
+| 模式 | 语义 | 适用 |
+|---|---|---|
+| `dsh`（**生产默认**） | split agent 真调 flash 模型拆解（一次性，timeout 300s） | 正式任务运行 |
+| `demo` | 写最小可用拆解 JSON，不调任何模型 | 单元测试、链路联调 |
 
-1. **planner splits by coupling**: tightly-coupled code lands in the same module (if changing A means changing B, they belong together); modules communicate only through **data contracts + interface contracts** and never read each other's source.
-2. **executor runs + warm continuation**: independent session per module; when the remaining volume drops below the threshold it **doesn't spawn a new block — the current executor finishes the remainder** — its context is still warm, saving tokens and keeping quality coherent.
-3. **auditor acceptance**: independent role, verifies the acceptance list item by item + programmatic evidence collection (pytest / semgrep / boundary checks); failures get sent back.
-4. **split recursion**: only splits further when the remainder exceeds the threshold; each block is "swallowed in one bite".
-5. **Granularity is the biggest cost lever and the quality/overhead balance point**: different granularities of the same task differ 4.6× in cost (63K–336K). Our balance threshold is **~1,000 lines per executor task** — above it, split recursively (smaller context per block); below it, let the current executor finish (warm context saves tokens).
+- **框架现有测试已全部通过驱动注入隔离，不依赖该默认值**（`split_driver` 参数注入）；
+  但**新写端到端/验收测试时必须显式 `FW_SPLIT_MODE=demo`**（或经 `split_driver` 注入），
+  否则会真打模型（timeout 300s + 真 token 消耗）。
+- 需要在测试里允许真调用的场景，显式声明 `FW_SPLIT_MODE=dsh`，不要依赖默认值。
 
-### Rejection and escalation (the boundary of "fully automatic" — when you actually show up)
+## 六、升级链与预算闸门速查
 
-An auditor rejection ≠ starting over. Repairs are always **in-place**: module artifacts stay, the executor's next round continues with its 【previous-round feedback】 (done / to-do); even when the executor is swapped, the replacement **takes over existing progress** (progress snapshot + handover bundle) — never from scratch.
+### 6.0 安全边界（威胁模型，2026-09-04）
 
-The escalation chain after a rejection (default config, fully automatic — you only show up if everything fails):
+- **信任边界**：能写任务目录（`modules/*/`、`总日志/`）的主体 = 能在 executor/auditor
+  执行期引入任意内容（LLM 会话会读取 REVIEW/产物清单——存在 prompt 注入面）。
+  框架以「任务目录内容可信」为前提，适用于自用/受控 CI；开源部署建议任务目录仅限可信方写入。
+- **命令执行**：drivers 的 cmd 模板占位值已 `shlex.quote`（M5，防御性）；当前占位值经
+  环境变量传递，不经 shell 二次解析。新增 cmd 模板时占位符应独立成词，勿嵌路径中段。
 
-```
-auditor rejection
-  → same executor fixes in place (up to 2 rounds, REVIEW pinpoints the to-dos)
-  → a different executor takes over (once)
-  → recursive split: break the module into smaller pieces
-  → model upgrade fallback (flash → pro)
-  → only then needs_human, and a human takes over
-```
+## 六、升级链与预算闸门速查
 
-Two exceptions escalate immediately without burning rounds: failures rooted in **upstream/contract** (retrying is pointless — fix the dependency first), or **environment problems** (rate limits / network — bounded backoff, 3 retries, since swapping executors is useless).
+- **升级链（2+1 回人）**：auditor block → 回同 executor（REVIEW.md 已附判定）→ 满 `retry_before_switch` 次 → 换新 executor（交接三件套 = REVIEW.md + contract.yaml + 交付说明.md，写 `logs/handover-*.md`）→ 满 `max_executor_switches` → 回人；**失败根因分流**：`root ∈ {upstream, contract}` 直接抛人不重试；心跳卡死（连续 N 轮无实质产出）等效 block/self 但不给 retry。
+- **预算闸门**：token 记账 = 每轮 `DriverOutcome.tokens`（dsh token-meter 对接钩子，见 `fw-budget/fw_budget/meter.py` 适配点）；70% warn（事件 `budget.warn` + 排行）、100% stop（事件 `budget.stop` + 快照 status=stopped + 抛人信息完备）、单模块超限硬停。
+- **加预算续跑**：`fw-budget add-budget <根> <新上限> --reason ...`（fs 原子写）→ `fw-budget resume <根>`（历史消耗灌回 BudgetGate）→ 已完成模块零重跑（快照 checkpoint）。放弃 → `fw-budget archive <根>`（拒绝续跑）。
 
-The dashboard's "pending decisions" contains only two kinds — neither is a code-level micro-decision (code-level items are already verified by the auditor's item-by-item evidence):
-- **Human acceptance items**: GUI appearance / real-world scenarios / experience — dimensions a framework cannot verify. Code is all green; these are listed for you and an external AI to review.
-- **Modules needing a decision**: modules where automation is exhausted, with root cause attached (delivery / environment / contract / stall) and options A abandon / B change approach / C pause / D custom.
-
-### What a contract looks like
-
-Modules share no code — only shapes. Each module's task book carries contract files (auto-generated; you can also declare them explicitly in the PRD and the planner will respect that):
-
-```yaml
-# contracts/m01-task-state.yaml (example)
-interface:
-  dsh.task.list:
-    direction: F→R
-    returns:
-      tasks: "List[TaskSummary]"   # sorted by urgency desc
-      task:
-        id: str
-        stage: planning|executor|auditor|rejected|reassigned|needs_human|done
-        modules: "List[{id: str, stage: str, rejected_count: int}]"
-data:
-  snapshot.json:        # upstream file this module reads read-only
-    run_id: str
-    phase: str
-  dispatch.jsonl:       # event stream, append-only
-    events: "List[{seq: int, type: str, payload: dict}]"
-boundary:
-  may_read: [contracts/, shared/]
-  may_write: [modules/m01/]
-```
-
-The executor's entire world is this contract plus its own module directory — it doesn't need, and is not allowed, to know the global picture.
-
-### Why it stays high-quality while saving tokens
-
-**AutoKnit's secret to saving tokens isn't "making the LLM work less" — it's "letting the LLM do only what it's best at": writing code. All orchestration, verification, dependency and reuse guidance is done by the program in the 0-token scheduling layer, so a modest amount of LLM intelligence produces higher-quality work.**
-
-- **0-token programmatic scheduling**: planner/split/runner are programs, not a "general coordinator" LLM. In the large-task run AutoKnit's orchestration cost was literally 0 — every token went to real output.
-- **Cache friendly**: frozen-prefix discipline + independent sessions per module; cache hit rates of 94–98%.
-- **A deterministic workstation**: contracts, interfaces and boundaries are pre-processed by the program into the task book — 100% of executor tool calls go to writing code, zero to exploration.
-- **Upstream capability digests (UCD)**: when a module finishes, the program AST-extracts its public interfaces and injects them 0-token into the downstream executor's context — downstream reuses upstream capabilities directly (m03 reusing m02's summary), no rewriting, no exploration (measured 32% cheaper for that module).
-- **Programmatic auditor evidence**: pytest/semgrep/boundary checks are pre-run by the program into an evidence layer; the auditor only spot-checks, never reads everything — audit cost share dropped from 34% to 22–28%, still item-by-item.
-- **Dependencies installed once**: python_packages declared in the task are aggregated and installed by the bootstrap (120s timeout fallback) — executors never install on the fly or reinvent wheels.
-- **Cheap models + low thinking tier work**: deepseek-v4-flash (flash tier, thinking low) produced thick deliveries end to end — the architecture takes "arranging and architecting" off the LLM's shoulders.
-
----
-
-## 4. How to use
-
-### Flow
-
-Today's agents can already "ask clarifying questions and turn a vague requirement into a complete PRD" — that upfront conversation usually takes **3 rounds**. Hand it to AutoKnit from there; what you save is hours of back-and-forth and the information loss of a bloating context:
-
-```
-1. Tell your agent the requirement        ← you only bring the idea
-2. Your agent asks clarifications, produces a complete PRD  ← usually 3 rounds
-3. autoknit plan-only <task dir>   ← review the plan: how many modules, how many lines each, contract list (no execution, no cost)
-4. autoknit run                    ← split / dispatch / write / verify / continue / recurse — fully automatic
-5. Get modules/ module code + merge notes
-6. Your agent merges against the notes, one round  ← you review once
-```
-
-### Dependencies (from zero)
-
-1. Python 3.11+, git, npm
-2. `pip install autoknit` — installs the `autoknit` command in one shot (framework bundled; incl. fw-protocol / fw-scaffold / the data bridge). Source route: `git clone https://github.com/Renjie-hub-byte/DSH-AutoKnit.git && cd DSH-AutoKnit && bash install.sh`
-3. Install [dsh](docs/quickstart.md appendix A) (the DeepSeek harness, `npm install -g @deepseek-ai/dsh`) and log in, or point `~/.autoknit/config.yml` at your dsh path and credentials
-4. `autoknit doctor` — one-shot health check: dsh binary / credentials / model routing / panel connectivity, with human-readable fix instructions for anything missing
-
-### Commands & flags
-
-| Command / flag | Meaning |
-|---|---|
-| `autoknit plan-only <dir>` | Runs only the planner: produces task.yaml (module decomposition + contracts), no execution, no execution tokens; review it, then continue with `run` |
-| `autoknit run [--resume]` | Full pipeline; `--resume` continues from a checkpoint (no re-planning after crashes/interruptions). Continuation threshold: `split_exit_threshold` (default 1000 lines) |
-| `--executor-model <model>` | Swap the executor model (measured: the flash tier already produces high-quality deliveries) |
-| `autoknit dashboard` | Visual panel: module progress chain, per-role timing, token consumption (input/output/cache), pending decisions (human acceptance items / escalated modules with root causes — see "Rejection and escalation"). Installed by install.sh; a dsh-side dashboard plugin ships along, plug and play; all APIs exposed, build your own UI if you like |
-| `autoknit doctor` | Health check: what's missing, how to install it, human-readable errors |
-
-### About merging
-
-`autoknit merge` is **pure program, zero LLM** mechanical merging: it produces ① the directory skeleton positioned by dependency topology, ② each module's target interface files, ③ cross-module import wiring, ④ four conflict lists (name clashes / naming mismatches / interface signature drift / needs-semantic-merge — each marked "needs human decision"). Measured: hand the merge notes to an agent and **one session finishes the merge**; the semantic-level fusions are clearly listed.
-
----
-
-## 5. Failure modes and protections (all bitten and fixed — so you don't have to)
-
-| What we stepped on | Status & protection |
-|---|---|
-| Prompt "if present" wording created uncertainty → executor lost its boundary and explored (measured +80K/round) | ✅ Fixed: the runner decides programmatically — always provide what should be given, never mention what doesn't exist |
-| Wrong decomposition granularity → cost inflated 4.6× | ✅ Protected: plan-only review + recursive split + warm continuation |
-| final_block remainder silently swallowed | ✅ Fixed: split single-block semantics rebuilt (BUG-20260829, traceable) |
-| Each module's tests green, breaks when assembled (contract drift / CORS / wrong endpoints) | ✅ Protected: contract alignment + merge conflict lists + human integration acceptance (still recommended as a final human pass) |
-| venv state drift / dead interpreter symlink → silent startup crash | ✅ Fixed: bootstrap trial-run validation + human-readable preflight errors |
-| Long tasks frozen by system sleep (macOS lid close) | ✅ Protected: runtime anti-sleep wrapping + QUICKSTART note |
-| Task-declared dependencies not installed (zstandard etc.) → executor forced to reinvent | ✅ Fixed: bootstrap aggregates python_packages from task.yaml (120s timeout fallback; on failure writes "known risks" instead of blocking) |
-| "Prefer stdlib on missing deps" ambiguity → executor reinvented a codec (pure-Python zstd, 884 lines, once 293K/30min) | ✅ Fixed: tool red lines (no web_search / curl downloads / pip install / reimplementing codecs; zstd via `zstd -d -c`) |
-| Upstream info cut off → downstream re-implements (m03 rewrote m02's 138-line summary) | ✅ Fixed: UCD upstream capability digests (AST-extracted interfaces injected 0-token into downstream context) |
-| Told to "reuse" without an import path → downstream sys.path hacks and source-diving (m03 once +16%) | ✅ Fixed: UCD reuse guidance (direct import) + PYTHONPATH injection + anti-association discipline |
-| Auditor reading all source + re-running tests → 34% of cost | ✅ Fixed: programmatic pre-evidence (pytest/semgrep/boundary) + spot-check-not-full-read (share down to 22–28%, still item-by-item) |
-
-**Why we dare promise "robust"**: we found AI fault-tolerance is "checklist-driven" — scenarios the PRD names explicitly (atomic writes, malformed input, deterministic error codes) all survived adversarial injection testing; what the PRD doesn't name (race conditions, symlink escapes) is every AI tool's shared blind spot. So AutoKnit's answer isn't praying for model luck — it's hard-coding the standard robustness checklist **into every task book programmatically**, so the auditor has something to verify against.
-
----
-
-## 6. What AutoKnit is NOT for
-
-- A few-hundred-line script or one-off tool — overkill; the sweet spot starts at 1,000 lines
-- Pixel-level UI polish that needs unified aesthetic judgment — the divide-and-conquer output is "usable and robust"; pixel-level tuning belongs to interactive tools
-- Projects whose requirements you haven't thought through — contract-driven assumes you can say what you want (that's exactly why steps 1–2 exist)
-
-> Note: "strong global state" and "blurry module boundaries" are commonly misread as poor fits — the opposite is true. Strong global state = high coupling, which should be gathered into one module when splitting by coupling (the framework handles oversized modules, splitting recursively past the threshold); blurry boundaries are split's day job. So they're not "poor fits" — they're AutoKnit's use cases.
-
----
-
-## 7. Quick start
+## 七、快速开始（含端到端复现）
 
 ```bash
-pip install autoknit                 # one-shot: autoknit command + data bridge (source route: clone + bash install.sh)
-autoknit doctor                  # health check, with fix instructions
-# Prepare a PRD (have your agent interview you and produce one)
-autoknit plan-only <task dir>    # review the plan
-autoknit run                     # fully automatic execution
-autoknit dashboard               # optional: live progress / consumption / pending decisions
+# 环境：Python 3.11 + PyYAML + jsonschema（已在 dsh 环境）
+cd ~/projects-hold/projects/dsh-workflow/framework-v1
+
+# 单模块用法示例（以 fw-scaffold 示例任务书为例；用 fw-integrate 的 conform 驱动交付，
+# 保证产物与基线匹配，全链跑通；默认 demo 驱动只完成编排、集成会按基线缺失正确回人——
+# 这正是"运行时契约校验"的预期行为）
+FW1=~/projects-hold/projects/dsh-workflow/framework-v1
+X=/tmp/fw1-mydemo
+python3.11 $FW1/fw-protocol/bin/fw-protocol $FW1/fw-scaffold/examples/task-valid.yaml --json   # ① 校验
+python3.11 $FW1/fw-scaffold/bin/fw-scaffold $FW1/fw-scaffold/examples/task-valid.yaml -o $X      # ② 生成
+python3.11 $FW1/fw-runner/bin/fw-runner run $X/任务-示例-订单管道_2026-08-21 \
+  --executor-cmd "python3.11 $FW1/fw-integrate/examples/executor-conform.py" \
+  --auditor-cmd  "python3.11 $FW1/fw-integrate/examples/auditor-conform.py" --json              # ③ 编排
+python3.11 $FW1/fw-integrate/bin/fw-integrate complete $X/任务-示例-订单管道_2026-08-21 --json   # ④ 集成归档
+
+# 需求7 端到端示例（3 模块，含 1 次失败升级链路 + 预算 warn 路径 + 集成归档）
+python3.11 e2e/run_e2e.py            # 每次独立运行目录 e2e/runs/run-<ts>/，可重复执行
+python3.11 e2e/run_e2e.py --json     # 机器可解析摘要
+# 证据链：e2e/runs/run-<ts>/e2e-evidence.md + runner-result.json + budget-report.json
+#        + archived/任务-端到端-订单管道_*/（完成报告.md + ARCHIVE.md + 快照/事件流/REVIEW/handover）
 ```
 
----
+端到端示例已实测全部通过（详见 `e2e/README.md` 与 `e2e/runs/` 下的真实运行产物）。
 
-## Roadmap
+## 八、已知限制（诚实交付）
 
-**v1.0 shipped**
+1. **dsh token-meter 为适配点 stub**：token 汇总默认走本地事件流账本（`EventLogTokenMeter`，从 `总日志/dispatch.jsonl` 归集每轮 `DriverOutcome.tokens`）；真实 `dsh meter` 接入点见 `fw-budget/fw_budget/meter.py` 的 `DshTokenMeter._query_dsh()`（当前恒返回 None → fallback）。
+2. **dsh 真实能力接入点标注**：沙箱硬隔离 / sessions.fork / sessionProjections checkpoint / session-query / 事件 seq 在框架内以"本地等价物 + 适配点"落地（如 fork.py、checkpoint.py、events.py、io_utils.py），未在真实 dsh 平台跑通——文档（design-v04.md §五）逐一标注了接入语义。
+3. **三 preset 在 dsh GUI 可选性未实测**：presets/ 提供 `preset.yml + agent.cordis.yml` 与挂载步骤（`cp -r presets/<角色> ~/.dsh/.agent-presets/` 后重启 GUI），真实 GUI 确认属收尾流程。
+4. **验收冲突只标记不代定优先级**：命中"快 vs 安全"关键词 → conflict 上抛回人拍板（三权分立铁律：executor 永不自定验收标准）。
+5. **契约为 前缀+方法 级**：规划期禁止硬定字段；字段级 schema 校验不在契约内（output.describe 为自然语言，数据格式校验是"解析级"）。
+6. **预测基线对照为关键词启发式**：文件样 token 按路径存在性 + 中文/英文关键词在交付物文本搜索；证据面排除任务书回显（避免误命中），`will_not_have` 护栏语义宁多勿漏。
+7. **单模块超限用硬停而非升级链**（v0.4 设计为进升级链，本实现按 round_005 文档标注为硬停——防失控模块吃光全局优先）。
+8. **fw-scaffold manifest 不监控执行期**：目录生成后执行的产物变化不受 expected 版本防护管控（它只管生成期）。
+9. **快照/事件流是 JSONL 与 JSON 文件**，规模大时可用 dsh 底部能力替代（当前直接读文件足够）。
+10. **git 仓库与 GitHub 推送未执行**：项目根暂无 git 仓库，`git init/commit/push`（走 socks5h://127.0.0.1:1080 代理）属收尾流程，步骤见 design-v04.md §六。
+11. **auditor persona 示例行措辞瑕疵**（round_008 遗留收尾项）：示例行 `verdict=complete` 与协议 `pass|block` 不一致，不影响 canonical JSON 契约与机器解析（`DriverOutcome.from_mapping` 白盒消费已验）。
 
-- [x] Divide-and-conquer execution framework (planner / executor / auditor / split)
-- [x] Contract-driven + change isolation + recursive splitting + warm continuation
-- [x] Human-in-the-loop + visual panel (incl. dsh dashboard plugin, all APIs exposed) + token/cache observability
-- [x] Programmatic code merging (merge, zero LLM) + plan-only review mode
-- [x] Packaging & installation (one-shot install.sh + doctor health check + anti-sleep)
+## 九、文档索引
 
-**Planned (community-feedback driven, non-blocking for release)**
-
-- [ ] Delivery health system: plan-level topology checks + blast-radius forecasting + static structure evidence
-- [ ] More models / more substrate presets
-- [ ] More third-party benchmark data (Issues welcome)
-
----
-
-*AutoKnit — let the LLM do the thinking, let the program do all the legwork.*
-
----
-
-### Documentation map
-
-| Document | Content |
+| 文档 | 位置 |
 |---|---|
-| docs/quickstart.md | Zero to running (dependencies, dsh install & login, environment pitfalls) |
-| docs/cli.md | Commands & flags in detail (threshold semantics, resume mechanics) |
-| docs/architecture.md | The four roles + contract system (for contributors) |
-| docs/benchmark.md | All benchmark data, per-case reports, full accounting notes |
-| docs/faq.md | Glossary (contract / needs_human / rejection / continuation) + FAQ |
+| 本文件（架构/流程/配置/模式开关/限制） | `framework-v1/README.md` |
+| v0.4 设计实现度对照 | `framework-v1/design-v04.md` |
+| 端到端示例复现指南 | `framework-v1/e2e/README.md` |
+| 各模块详细规格 | `fw-protocol/docs/schema.md`、`fw-scaffold/docs/scaffold-spec.md`、`fw-runner/docs/runner-spec.md`、`fw-budget/docs/budget-spec.md`、`fw-integrate/docs/integrate-spec.md`、`presets/docs/presets-spec.md` |

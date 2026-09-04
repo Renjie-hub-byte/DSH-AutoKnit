@@ -78,7 +78,23 @@ def _read_outcome_json(module_dir: Path, role: str) -> Optional[Mapping[str, Any
             d = json.load(f)
         return d if isinstance(d, dict) else None
     except (OSError, json.JSONDecodeError):
+        pass
+    # M4（BUG-20260904，U4）：坏 JSON（截断/尾逗号）不再整份作废——json_repair 修复
+    # 兜底（层②），注入 _parse meta 留痕（R3：静默降级=没有降级）。修复失败仍 None。
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except OSError:
         return None
+    try:
+        import json_repair as _jr
+        d = _jr.loads(raw)
+    except Exception:
+        return None
+    if isinstance(d, dict):
+        d["_parse"] = {"source": "file", "repaired": True, "role": role}
+        return d
+    return None
 
 
 # BUG-003 修复（2026-08-25）：兼容 executor 的「remaining N 行」写法。
@@ -175,14 +191,18 @@ class ScriptedAgentDriver:
         self.timeout = timeout
 
     def run_round(self, ctx: AgentContext) -> DriverOutcome:
+        # M5（U5）：占位值一律 shlex.quote——模板作者未来把 {module_dir} 嵌进 shell
+        # 模板时，含空格/$( )/反引号的路径不再撕裂命令或执行注入。当前框架模板
+        # 不含占位符（占位值经环境变量传递，不经 shell 二次解析），纯防御。
+        import shlex
         cmd = self.cmd.format(
-            module_dir=ctx.module.dir,
-            task_root=ctx.task_root,
-            run_id=ctx.run_id,
-            round=ctx.round_no,
-            role=self.role,
-            executor_id=ctx.executor_id,
-            mode=ctx.mode,
+            module_dir=shlex.quote(str(ctx.module.dir)),
+            task_root=shlex.quote(str(ctx.task_root)),
+            run_id=shlex.quote(str(ctx.run_id)),
+            round=shlex.quote(str(ctx.round_no)),
+            role=shlex.quote(str(self.role)),
+            executor_id=shlex.quote(str(ctx.executor_id)),
+            mode=shlex.quote(str(ctx.mode)),
         )
         env = dict(self.env)            # 驱动自带 env（如测试注入的 FW_EXIT_INTERRUPT）
         env.update(ctx.to_env())        # runner 注入的标准变量（优先级更高）
